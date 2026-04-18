@@ -83,3 +83,20 @@ class TestSchemaCache:
         # Access property — should trigger refresh
         ctx = cache.schema_context
         assert "TEST_TABLE" in ctx
+
+    def test_short_keywords_kept(self):
+        """Keywords like 'age', 'sex', 'pop' (3 chars) must be extracted
+        — they are critical for ACS schema filtering."""
+        keywords = SchemaCache._extract_keywords("What is the age distribution?")
+        assert "age" in keywords
+
+    def test_follow_up_stop_words_filtered(self):
+        """Common follow-up words don't pollute the keyword set."""
+        keywords = SchemaCache._extract_keywords("Now break that down by age")
+        # 'now', 'break', 'down', 'that' should all be stop words
+        assert "now" not in keywords
+        assert "break" not in keywords
+        assert "down" not in keywords
+        assert "that" not in keywords
+        # But 'age' (3 chars) should be kept
+        assert "age" in keywords

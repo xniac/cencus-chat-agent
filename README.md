@@ -4,7 +4,11 @@ An interactive chat agent that answers natural language questions about US popul
 
 ## Live Demo
 
-> **URL:** _(to be added after deployment)_
+> **URL:** https://cencus-chat-agent.onrender.com/
+>
+> ⚠️ **Cold start notice:** Hosted on Render's free tier, which spins down the instance after ~15 minutes of inactivity. The **first request after a cold start can take up to 50 seconds** to wake the container, reconnect to Snowflake, and warm the schema cache. Subsequent requests respond normally (typically 10–15s). If the first load hangs, wait for the initial response — it's not broken, just cold.
+
+![Census Chat Agent UI — multi-turn conversation showing top 10 populated states and a follow-up for bottom 5](docs/screenshot-chat.png)
 
 ## Architecture
 
@@ -54,6 +58,7 @@ An interactive chat agent that answers natural language questions about US popul
 | **Per-step timeouts** (`asyncio.wait_for`) | Bounds non-streaming LLM calls (topic 15s, SQL-gen 45s, SQL-fix 30s); streaming has no cap |
 | **`asyncio.to_thread` for Snowflake** | Sync connector calls run in a thread pool; the event loop isn't blocked |
 | **In-memory sessions** | Acceptable for demo; TTL-based expiration; `SessionStore` is swappable for Redis |
+| **Stateful multi-turn with SQL-aware history** | Two history accessors: plain history for response generation; SQL-inclusive history for SQL generation. Lets the LLM build on prior queries (e.g., "now the bottom 5") without reasoning from scratch. |
 | **Pluggable LLM provider** | OpenAI and Anthropic share a `Protocol` — config-driven switch |
 
 ## Tech Stack
@@ -176,6 +181,16 @@ Send a chat message, receive an SSE stream.
 - "Which state has the highest and lowest population?"
 - "What percentage of households have no vehicle by state?"
 
+### Multi-turn example
+
+The agent preserves conversation context. After "Top 5 populated states" you can ask:
+
+- "What about the bottom 5?" → LLM sees the previous SQL and reverses `ORDER BY` + swaps `DESC` for `ASC`
+- "Now break that down by age" → LLM joins the B01 age/sex table
+- "Show the same for 2019 instead" → LLM swaps `2020_CBG_B01` for `2019_CBG_B01`
+
+Sessions have a 30-minute sliding TTL and retain the last 20 messages. The `session_id` is returned in the SSE stream and echoed back by the client automatically.
+
 ## Environment Variables
 
 | Variable | Required | Default | Description |
@@ -189,7 +204,7 @@ Send a chat message, receive an SSE stream.
 | `SNOWFLAKE_ROLE` | No | `ACCOUNTADMIN` | Role name |
 | `LLM_PROVIDER` | No | `openai` | `openai` or `anthropic` |
 | `OPENAI_API_KEY` | If OpenAI | — | OpenAI API key |
-| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model (mini recommended for higher TPM) |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model. **Recommended** for new accounts — the schema prompt is ~12k tokens, and `gpt-4o` free-tier has a 30k TPM cap which fails on longer conversations. `gpt-4o-mini` has ~200k TPM and is cheaper. |
 | `ANTHROPIC_API_KEY` | If Anthropic | — | Anthropic API key |
 | `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Anthropic model |
 | `SESSION_TTL_MINUTES` | No | `30` | Session timeout |

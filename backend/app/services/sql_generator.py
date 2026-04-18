@@ -47,6 +47,14 @@ CRITICAL — COLUMN NAMES:
 - ACS column codes follow a strict pattern: B + 5 digits + (e|m) + number. Examples: "B01001e1", "B01002e1", "B19013e1".
 - If you cannot find a matching column in the schema for the user's question, respond CANNOT_ANSWER.
 - Do NOT add extra letters like 'a' to codes (e.g., "B01002ae1" is WRONG; "B01002e1" is correct).
+
+HANDLING FOLLOW-UP QUESTIONS:
+- If the user's message is a short follow-up (e.g., "what about the bottom 5?", "now break that down by age",
+  "same for 2019", "just for California"), treat it as a MODIFICATION of the PREVIOUS SQL in conversation history.
+- Do NOT return CANNOT_ANSWER for a follow-up just because it's terse. Build on the prior query.
+- "Break down by age" typically means adding age-group columns (B01001e3..B01001e49 for 5-year buckets) or
+  median age ("B01002e1"). Prefer median age for simplicity unless the user asks for distributions.
+- "By X" means GROUP BY X. "For X" means add a WHERE filter.
 """
 
 

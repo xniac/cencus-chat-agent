@@ -271,8 +271,21 @@ class SchemaCache:
 
     @staticmethod
     def _extract_keywords(question: str) -> set[str]:
-        stop = {"what", "when", "where", "which", "show", "list", "that", "this", "with", "from", "have", "there", "their", "many", "most", "much", "each", "some", "more", "less", "give", "tell", "does", "state", "states", "county", "counties"}
-        words = {w.lower() for w in re.findall(r"\w+", question) if len(w) >= 4 and w.lower() not in stop}
+        # Stop words to exclude — generic question words + overly-common nouns
+        # that don't help narrow the schema (FIPS/geographic tables get a +5
+        # boost separately so we don't lose state/county tables).
+        stop = {
+            "what", "when", "where", "which", "show", "list", "that", "this",
+            "with", "from", "have", "there", "their", "many", "most", "much",
+            "each", "some", "more", "less", "give", "tell", "does", "state",
+            "states", "county", "counties", "now", "break", "down", "those",
+            "they", "them", "also", "another",
+        }
+        # Min length 3 to keep short but meaningful terms like "age", "sex", "pop".
+        words = {
+            w.lower() for w in re.findall(r"\w+", question)
+            if len(w) >= 3 and w.lower() not in stop
+        }
         # For each word, also emit a 5-char prefix (handles populated/population, housing/house, etc.)
         prefixes = {w[:5] for w in words if len(w) >= 6}
         return words | prefixes

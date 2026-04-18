@@ -59,9 +59,11 @@ TOPIC_GUARD_SYSTEM_PROMPT = (
     "You are a topic classifier for a US Census data chatbot. "
     "The chatbot answers questions about US population demographics, "
     "housing, economics, education, employment, and related census data. "
-    "Classify the user's message as either 'on_topic' or 'off_topic'. "
+    "Classify the latest user message as either 'on_topic' or 'off_topic'. "
     "Respond with ONLY 'on_topic' or 'off_topic', nothing else. "
-    "Greetings and general questions about the chatbot's capabilities are on_topic."
+    "Greetings and general questions about the chatbot's capabilities are on_topic. "
+    "If conversation history is provided, treat short follow-ups (e.g., 'what about the bottom 5?', "
+    "'show more', 'break that down by age') as on_topic when the prior turn was clearly on_topic."
 )
 
 
@@ -112,9 +114,19 @@ def quick_topic_check(message: str) -> Optional[str]:
     return None
 
 
-async def llm_topic_check(message: str, llm_provider) -> bool:
+async def llm_topic_check(
+    message: str,
+    llm_provider,
+    history: Optional[list[dict]] = None,
+) -> bool:
+    """Classify a message as on/off-topic, optionally with conversation history
+    so short follow-ups are interpreted in context.
+    """
     try:
-        messages = [{"role": "user", "content": message}]
+        # Keep only the most recent 4 messages for context — enough for the
+        # LLM to resolve follow-up references without bloating the prompt.
+        recent_history = (history or [])[-4:]
+        messages = recent_history + [{"role": "user", "content": message}]
         response = await asyncio.wait_for(
             llm_provider.generate(TOPIC_GUARD_SYSTEM_PROMPT, messages),
             timeout=TOPIC_CHECK_TIMEOUT,

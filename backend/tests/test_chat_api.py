@@ -172,6 +172,65 @@ class TestChatAPI:
             session_id2 = next(e for e in events2 if e["event"] == "session_id")["data"]
             assert session_id == session_id2
 
+    def test_ambiguous_followup_trusted_in_active_session(self):
+        """After a successful census query, ambiguous short follow-ups like
+        'Now break that down by age' should NOT be rejected by the topic
+        guardrail. The quick_topic_check still blocks clear off-topic patterns.
+        """
+        session_store = SessionStore()
+        llm = MockLLMProvider(
+            generate_response="SELECT STATE, AVG(b.\"B01002e1\") FROM US_OPEN_CENSUS_DATA.PUBLIC.TEST_TABLE GROUP BY STATE LIMIT 10",
+            stream_tokens=["Ok"],
+        )
+        app = _create_test_app(llm=llm, session_store=session_store)
+        with TestClient(app) as client:
+            # Turn 1: on-topic (has 2+ census keywords, passes quick check)
+            r1 = client.post(
+                "/api/chat",
+                json={"message": "What is the population by state?"},
+            )
+            events1 = _parse_sse_events(r1.text)
+            session_id = next(e for e in events1 if e["event"] == "session_id")["data"]
+            # Verify turn 1 produced SQL (so the session has a successful prior turn)
+            assert any(e["event"] == "sql" for e in events1)
+
+            # Turn 2: ambiguous follow-up — would fail LLM topic check without
+            # the active-session trust, because it has no census keywords.
+            r2 = client.post(
+                "/api/chat",
+                json={"message": "Now break that down by age", "session_id": session_id},
+            )
+            events2 = _parse_sse_events(r2.text)
+            event_types = [e["event"] for e in events2]
+            # Should NOT contain off-topic error
+            assert "sql" in event_types, f"Follow-up was rejected; events: {event_types}"
+
+    def test_ambiguous_followup_still_blocks_off_topic(self):
+        """Active-session trust should not bypass the off-topic pattern check."""
+        session_store = SessionStore()
+        llm = MockLLMProvider(
+            generate_response="SELECT * FROM US_OPEN_CENSUS_DATA.PUBLIC.TEST_TABLE LIMIT 10",
+        )
+        app = _create_test_app(llm=llm, session_store=session_store)
+        with TestClient(app) as client:
+            # Turn 1: on-topic
+            r1 = client.post(
+                "/api/chat",
+                json={"message": "Population and demographics by state?"},
+            )
+            session_id = next(
+                e for e in _parse_sse_events(r1.text) if e["event"] == "session_id"
+            )["data"]
+
+            # Turn 2: clearly off-topic — should be rejected by quick_topic_check
+            # via OFF_TOPIC_PATTERNS even though session is active
+            r2 = client.post(
+                "/api/chat",
+                json={"message": "How do I cook pasta recipe?", "session_id": session_id},
+            )
+            events2 = _parse_sse_events(r2.text)
+            assert any(e["event"] == "error" for e in events2)
+
     def test_cannot_answer_handling(self):
         llm = MockLLMProvider(
             generate_response="CANNOT_ANSWER: The dataset does not contain weather information"

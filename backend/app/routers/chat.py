@@ -67,7 +67,22 @@ async def chat(request: Request, body: ChatRequest):
 
             topic_result = quick_topic_check(body.message)
             if topic_result is None:
-                topic_result = "on_topic" if await llm_topic_check(body.message, llm) else "off_topic"
+                # If the session has had at least one successful census query
+                # (assistant message with SQL), trust follow-ups. The quick
+                # check above still rejects anything matching off-topic
+                # patterns (weather, sports, recipes, etc.), so this is safe.
+                has_successful_prior = any(
+                    m.role == "assistant" and m.sql for m in session.messages
+                )
+                if has_successful_prior:
+                    topic_result = "on_topic"
+                    logger.debug("Trusting follow-up in active census session")
+                else:
+                    # Fresh session: ask LLM, passing history for context if any
+                    topic_history = session.get_history_for_llm() if session.messages else None
+                    topic_result = "on_topic" if await llm_topic_check(
+                        body.message, llm, history=topic_history
+                    ) else "off_topic"
 
             if topic_result == "off_topic":
                 yield _sse_event(
@@ -91,13 +106,21 @@ async def chat(request: Request, body: ChatRequest):
             history_plain = session.get_history_for_llm()
 
             # Use question-aware schema context to prioritize relevant tables.
-            # Runs in a thread because it may trigger a blocking refresh if the
-            # cache is stale.
+            # Concatenate the last 3 user messages so follow-ups like "break
+            # that down by age" inherit keywords from earlier turns (e.g.,
+            # "population", "states") when ranking tables/columns.
+            recent_user_msgs = [
+                m.content for m in session.messages[-6:] if m.role == "user"
+            ][-3:]
+            combined_for_schema = "\n".join(recent_user_msgs)
+            if body.message not in combined_for_schema:
+                combined_for_schema = (combined_for_schema + "\n" + body.message).strip()
+
             schema_ctx = await asyncio.to_thread(
                 schema_cache.get_context_for_question
                 if hasattr(schema_cache, "get_context_for_question")
                 else (lambda _q: schema_cache.schema_context),
-                body.message,
+                combined_for_schema,
             )
             result, sql, reason = await generate_sql(
                 question=body.message,

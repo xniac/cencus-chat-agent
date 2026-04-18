@@ -155,3 +155,33 @@ class TestLLMTopicCheck:
         llm.generate = failing_generate
         result = await llm_topic_check("Some question", llm)
         assert result is True  # Fail open
+
+    @pytest.mark.asyncio
+    async def test_follow_up_with_history_passes(self):
+        """Short follow-ups like 'what about the bottom 5?' should be resolved
+        with conversation history passed through.
+        """
+        llm = MockLLMProvider(generate_response="on_topic")
+        history = [
+            {"role": "user", "content": "Top 5 populated states"},
+            {"role": "assistant", "content": "California, Texas, Florida..."},
+        ]
+        result = await llm_topic_check("What about the bottom 5?", llm, history=history)
+        assert result is True
+        # Verify history was actually sent to the LLM
+        messages_sent = llm.calls[0]["messages"]
+        contents = [m["content"] for m in messages_sent]
+        assert "Top 5 populated states" in contents
+        assert "What about the bottom 5?" in contents
+
+    @pytest.mark.asyncio
+    async def test_history_truncated_to_last_4(self):
+        """Only the last 4 history messages should be sent, to bound prompt size."""
+        llm = MockLLMProvider(generate_response="on_topic")
+        history = [{"role": "user", "content": f"msg {i}"} for i in range(10)]
+        await llm_topic_check("follow-up", llm, history=history)
+        messages_sent = llm.calls[0]["messages"]
+        # 4 history messages + 1 current = 5 total
+        assert len(messages_sent) == 5
+        # Should include the most recent history
+        assert messages_sent[0]["content"] == "msg 6"
