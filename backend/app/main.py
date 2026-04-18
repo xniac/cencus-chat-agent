@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from backend.app.config import settings
 from backend.app.services.snowflake_client import SnowflakeClient
 from backend.app.services.llm import get_llm_provider
-from backend.app.services.schema_cache import SchemaCache
+from backend.app.services.schema_cache import SchemaCache, REFRESH_INTERVAL
 from backend.app.services.session import SessionStore
 from backend.app.routers.chat import router as chat_router
 
@@ -26,6 +26,19 @@ async def _session_cleanup_loop(session_store: SessionStore):
         await asyncio.sleep(300)
         await session_store.cleanup_expired()
         logger.debug(f"Session cleanup complete. Active sessions: {session_store.active_count}")
+
+
+async def _schema_refresh_loop(schema_cache: SchemaCache):
+    """Periodically refresh the schema cache in a worker thread so the
+    scheduled refresh never blocks the event loop.
+    """
+    while True:
+        await asyncio.sleep(REFRESH_INTERVAL)
+        try:
+            await asyncio.to_thread(schema_cache.refresh)
+            logger.debug("Schema cache refresh complete")
+        except Exception as e:
+            logger.warning(f"Scheduled schema refresh failed: {e}")
 
 
 @asynccontextmanager
@@ -55,17 +68,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to initialize schema cache: {e}")
 
-    # Start session cleanup task
+    # Background tasks: session cleanup + periodic schema refresh.
+    # The schema refresh runs in a thread so it never blocks the event loop.
     cleanup_task = asyncio.create_task(_session_cleanup_loop(session_store))
+    schema_task = asyncio.create_task(_schema_refresh_loop(schema_cache))
 
     yield
 
     # Shutdown
-    cleanup_task.cancel()
-    try:
-        await cleanup_task
-    except asyncio.CancelledError:
-        pass
+    for task in (cleanup_task, schema_task):
+        task.cancel()
+    for task in (cleanup_task, schema_task):
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     logger.info("Census Chat Agent shut down.")
 
 

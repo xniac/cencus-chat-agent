@@ -22,9 +22,12 @@ DANGEROUS_SQL_PATTERNS = [
     r"\bMERGE\b",
     r"\bCALL\b",
     r"\bCOPY\b",
-    r"\bPUT\b",
-    r"\bGET\b",
     r"\bREMOVE\b",
+    # Note: Snowflake GET/PUT (file staging) removed from this list —
+    # they cause false positives on legitimate queries containing GET/PUT
+    # as string literals or column values (e.g., WHERE method = 'GET').
+    # The start-anchored SELECT/WITH check already blocks these commands
+    # (GET/PUT queries must start with GET/PUT at the statement level).
 ]
 
 CENSUS_KEYWORDS = [

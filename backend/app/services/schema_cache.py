@@ -41,13 +41,20 @@ class SchemaCache:
 
     @property
     def schema_context(self) -> str:
-        if not self._schema_context or self._needs_refresh():
+        # If we have no data at all, do a blocking refresh (cold start fallback).
+        # Otherwise return what we have; the background task keeps it fresh.
+        if not self._schema_context:
             self.refresh()
+        elif self._needs_refresh():
+            logger.debug("Schema cache stale; serving current data until next background refresh")
         return self._schema_context
 
     def get_context_for_question(self, question: str) -> str:
-        if not self._table_info or self._needs_refresh():
+        # Same policy: only block if we have nothing cached.
+        if not self._table_info:
             self.refresh()
+        elif self._needs_refresh():
+            logger.debug("Schema cache stale; serving current data until next background refresh")
         return self._build_schema_context(
             self._table_info, self._column_info, self._field_descriptions, question
         )

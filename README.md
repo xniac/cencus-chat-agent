@@ -1,6 +1,6 @@
 # US Census Chat Agent
 
-An interactive, chat-based agent that answers natural language questions about US population data, powered by the **SafeGraph US Open Census** dataset on Snowflake Marketplace.
+An interactive chat agent that answers natural language questions about US population data, powered by the **SafeGraph US Open Census** dataset on Snowflake Marketplace.
 
 ## Live Demo
 
@@ -9,60 +9,59 @@ An interactive, chat-based agent that answers natural language questions about U
 ## Architecture
 
 ```
-┌──────────────┐     SSE      ┌─────────────────────────────────┐
-│  React SPA   │◄────────────►│         FastAPI Backend          │
-│  (Vite/TS)   │   POST/SSE   │                                 │
-└──────────────┘              │  ┌──────────┐  ┌─────────────┐  │
-                              │  │Guardrails│  │ Session Mgmt │  │
-                              │  └────┬─────┘  └──────┬──────┘  │
-                              │       │               │         │
-                              │  ┌────▼─────────────────────┐   │
-                              │  │    LLM (OpenAI/Anthropic) │   │
-                              │  │  ┌──────────┐ ┌────────┐ │   │
-                              │  │  │SQL Gen   │ │Response│ │   │
-                              │  │  └──────────┘ │  Gen   │ │   │
-                              │  │               └────────┘ │   │
-                              │  └──────────┬───────────────┘   │
-                              │             │                   │
-                              │  ┌──────────▼──────────┐        │
-                              │  │   Snowflake Client   │        │
-                              │  │   (Schema Cache)     │        │
-                              │  └──────────┬──────────┘        │
-                              └─────────────┼───────────────────┘
-                                            │
-                              ┌─────────────▼──────────┐
-                              │  Snowflake Marketplace  │
-                              │  US Open Census Data    │
-                              └────────────────────────┘
+┌──────────────┐    SSE     ┌──────────────────────────────────────────┐
+│  React SPA   │◄───────────│              FastAPI Backend             │
+│  (Vite/TS)   │  POST/SSE  │                                          │
+└──────────────┘            │  Guardrails ──► SQL Gen ──► Safety Check │
+                            │                     │                    │
+                            │                     ▼                    │
+                            │                Snowflake                 │
+                            │                     │                    │
+                            │                     ▼                    │
+                            │            Response Stream (LLM)         │
+                            └─────────────────────┬────────────────────┘
+                                                  │
+                                                  ▼
+                                        US Open Census Data
+                                      (Snowflake Marketplace)
 ```
 
 ## How It Works
 
-1. **User sends a question** via the React chat UI
-2. **Topic guardrail** checks relevance (keyword matching → LLM classification if ambiguous)
-3. **SQL generation** — LLM converts the natural language question to a Snowflake SQL query using cached schema context + conversation history
-4. **SQL safety validation** — regex-based validator ensures only SELECT/WITH queries pass through
-5. **Snowflake execution** — query runs against the US Open Census dataset
-6. **Response generation** — LLM streams a natural language explanation of the results
-7. **Session management** — conversation history is preserved for multi-turn interactions
+1. **User sends a question** via the React chat UI (SSE streaming).
+2. **Topic guardrail** — fast keyword check first; LLM classification only for ambiguous inputs.
+3. **Question-aware schema context** — keyword-ranked tables + filtered ACS field descriptions (not the whole schema).
+4. **SQL generation** — LLM converts NL to Snowflake SQL with conversation history (including prior SQL for coherent follow-ups).
+5. **Safety validation** — regex validator blocks INSERT/UPDATE/DELETE/DROP/multi-statement SQL.
+6. **Deterministic SQL cleanup** — post-processor wraps UNION/INTERSECT/EXCEPT arms in parentheses for Snowflake syntax.
+7. **Snowflake execution** — runs in a worker thread (`asyncio.to_thread`) so the event loop stays responsive.
+8. **Retry on SQL error** — if Snowflake rejects the query, the LLM sees the error and retries once.
+9. **Response generation** — LLM streams a natural-language explanation of the results.
+10. **Session management** — in-memory sessions with TTL; cancellable mid-stream via the UI stop button.
 
 ## Design Decisions
 
 | Decision | Rationale |
 |---|---|
-| **Text-to-SQL** approach | Allows the agent to answer any question the data can support, rather than pre-defining a limited set of queries |
-| **Dynamic schema discovery** | Schema is fetched from Snowflake at startup and cached (1hr TTL) — no hardcoded column names that can drift |
-| **Two-phase guardrails** | Fast keyword check handles obvious cases; LLM classification only fires for ambiguous inputs (saves latency & cost) |
-| **SSE streaming** | Users see tokens as they arrive — better UX than waiting for full response. Simpler than WebSocket for request-response. |
-| **In-memory sessions** | Acceptable for demo scale; avoids external dependency (Redis). Sessions have TTL-based expiration. |
-| **Pluggable LLM provider** | Supports both OpenAI and Anthropic via a common Protocol interface — easy to switch or add providers |
+| **Text-to-SQL, not pre-built queries** | Handles any question the data supports; scales beyond hardcoded templates |
+| **Dynamic schema discovery + caching** | No schema drift; adapts if the dataset changes. 1hr TTL, question-aware filtering |
+| **ACS field descriptions in context** | SafeGraph column names are cryptic codes (`B19013e1`); descriptions are the "Rosetta Stone" |
+| **Keyword-ranked schema** | 42K-token full schema wouldn't fit; ranking surfaces relevant tables/columns first |
+| **Retry-on-SQL-error** | LLMs hallucinate column names; feeding the error back usually produces a correct fix |
+| **Deterministic UNION wrapping** | LLMs inconsistently follow "wrap each arm in parens" — a regex post-processor is reliable |
+| **Two-phase guardrails** | Fast keyword check covers ~90% of cases; LLM fallback for ambiguous inputs |
+| **SSE over WebSocket** | Simpler for request-response; tokens stream as they're generated |
+| **Per-step timeouts** (`asyncio.wait_for`) | Bounds non-streaming LLM calls (topic 15s, SQL-gen 45s, SQL-fix 30s); streaming has no cap |
+| **`asyncio.to_thread` for Snowflake** | Sync connector calls run in a thread pool; the event loop isn't blocked |
+| **In-memory sessions** | Acceptable for demo; TTL-based expiration; `SessionStore` is swappable for Redis |
+| **Pluggable LLM provider** | OpenAI and Anthropic share a `Protocol` — config-driven switch |
 
 ## Tech Stack
 
 - **Backend:** Python 3.12, FastAPI, Pydantic, sse-starlette
 - **Frontend:** React 18, TypeScript, Vite
-- **Database:** Snowflake (via snowflake-connector-python)
-- **LLM:** OpenAI GPT-4o or Anthropic Claude 3.5 Sonnet
+- **Database:** Snowflake (via `snowflake-connector-python`)
+- **LLM:** OpenAI (default `gpt-4o-mini`) or Anthropic Claude
 - **Deployment:** Docker, Render
 
 ## Project Structure
@@ -73,45 +72,26 @@ An interactive, chat-based agent that answers natural language questions about U
 │   ├── app/
 │   │   ├── config.py              # Pydantic Settings
 │   │   ├── main.py                # FastAPI app + lifespan
-│   │   ├── models/
-│   │   │   └── schemas.py         # Request/response models
-│   │   ├── routers/
-│   │   │   └── chat.py            # /api/chat, /api/health
+│   │   ├── models/schemas.py      # Request/response models
+│   │   ├── routers/chat.py        # /api/chat, /api/health
 │   │   └── services/
-│   │       ├── guardrails.py      # Topic + SQL safety checks
-│   │       ├── llm.py             # OpenAI/Anthropic providers
-│   │       ├── response_generator.py
-│   │       ├── schema_cache.py    # Snowflake schema caching
-│   │       ├── session.py         # In-memory session store
-│   │       ├── snowflake_client.py
-│   │       └── sql_generator.py
-│   ├── tests/
-│   │   ├── conftest.py            # Shared mocks & fixtures
-│   │   ├── test_chat_api.py       # Integration tests
-│   │   ├── test_guardrails.py     # Guardrail unit tests
-│   │   ├── test_schema_cache.py   # Schema cache tests
-│   │   └── test_session.py        # Session management tests
-│   ├── requirements.txt
-│   └── pyproject.toml
+│   │       ├── guardrails.py          # Topic + SQL safety checks
+│   │       ├── llm.py                 # OpenAI/Anthropic providers
+│   │       ├── response_generator.py  # Streams NL answer from results
+│   │       ├── schema_cache.py        # Keyword-ranked schema + ACS descriptions
+│   │       ├── session.py             # In-memory session store
+│   │       ├── snowflake_client.py    # Query execution + sanitization
+│   │       └── sql_generator.py       # NL→SQL + retry-fix + UNION wrapper
+│   └── tests/           # 82 tests — see REFLECTION.md for breakdown
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx                # Main application
-│   │   ├── App.css                # Styles (dark theme)
-│   │   ├── types.ts               # TypeScript types
-│   │   ├── hooks/
-│   │   │   └── useChat.ts         # Chat state + SSE handling
-│   │   └── components/
-│   │       ├── ChatWindow.tsx     # Message list + auto-scroll
-│   │       ├── InputBar.tsx       # Auto-resize textarea
-│   │       └── MessageBubble.tsx  # Message rendering + markdown
-│   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   └── vite.config.ts
-├── Dockerfile                     # Multi-stage build
+│   │   ├── App.tsx + App.css      # Main UI (dark theme)
+│   │   ├── hooks/useChat.ts       # SSE parser + state + cancel logic
+│   │   └── components/            # ChatWindow, InputBar, MessageBubble
+│   └── index.html, package.json, vite.config.ts
+├── Dockerfile                     # Multi-stage build (Node → Python)
 ├── docker-compose.yml
-├── render.yaml                    # Render deployment config
-└── README.md
+└── render.yaml                    # Render deployment config
 ```
 
 ## Local Development
@@ -119,96 +99,88 @@ An interactive, chat-based agent that answers natural language questions about U
 ### Prerequisites
 - Python 3.12+
 - Node.js 20+
-- Snowflake account with US Open Census Data (Marketplace)
+- Snowflake account with the **SafeGraph US Open Census Data** dataset installed from Marketplace
 - OpenAI or Anthropic API key
 
 ### Setup
 
 ```bash
-# Clone
 git clone <repo-url>
 cd cencus-chat-agent
+cp .env.example .env              # Edit with your credentials
 
-# Environment
-cp .env.example .env
-# Edit .env with your credentials
+# Python environment
+python -m venv .venv && source .venv/bin/activate
+pip install -r backend/requirements.txt
 
-# Backend
-cd backend
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Frontend
-cd ../frontend
-npm install
-
-# Run (two terminals)
-# Terminal 1 - Backend:
-cd backend && uvicorn app.main:app --reload --port 8000
-# Terminal 2 - Frontend:
-cd frontend && npm run dev
+# Node modules
+cd frontend && npm install && cd ..
 ```
+
+### Running (two terminals)
+
+```bash
+# Terminal 1 — Backend
+source .venv/bin/activate
+uvicorn backend.app.main:app --reload --port 8000
+
+# Terminal 2 — Frontend (dev server with live reload)
+cd frontend && npm run dev
+# Open http://localhost:3000
+```
+
+**Alternative:** after `cd frontend && npm run build`, visit http://localhost:8000 for the production build served by FastAPI.
 
 ### Running Tests
 
 ```bash
-cd backend
-pytest -v
-pytest --cov=app --cov-report=term-missing
+pytest backend/tests -v
+pytest backend/tests --cov=backend/app --cov-report=term-missing
 ```
 
 ## API Endpoints
 
 ### `POST /api/chat`
 
-Send a chat message and receive a streaming SSE response.
+Send a chat message, receive an SSE stream.
 
 **Request:**
 ```json
-{
-  "message": "What is the population of California?",
-  "session_id": "optional-uuid"
-}
+{ "message": "What are the top 10 most populated states?", "session_id": "optional-uuid" }
 ```
 
-**SSE Events:**
+**SSE events:**
 
 | Event | Data | Description |
 |---|---|---|
-| `thinking` | Status text | Progress update |
-| `sql` | SQL query string | Generated SQL |
-| `data` | Row count (int) | Number of result rows |
-| `answer_token` | Text token | Streamed response chunk |
-| `answer` | Full text | Complete answer (non-streaming fallback) |
-| `session_id` | UUID string | Session identifier |
-| `error` | Error message | Error description |
-| `done` | Empty | Stream complete |
+| `thinking` | status text | Pipeline progress update |
+| `sql` | SQL string | Generated query (shown in collapsible UI section) |
+| `data` | row count | Number of result rows |
+| `answer_token` | token | Streamed response chunk |
+| `answer` | full text | Complete answer (non-streaming fallback / error explanations) |
+| `session_id` | UUID | Session identifier (store and send back for multi-turn) |
+| `error` | text | User-friendly error (styled red in UI) |
+| `done` | empty | Stream complete |
 
 ### `GET /api/health`
 
 ```json
-{
-  "status": "healthy",
-  "snowflake_connected": true,
-  "llm_provider": "openai"
-}
+{ "status": "healthy", "snowflake_connected": true, "llm_provider": "openai" }
 ```
 
 ## Example Questions
 
 - "What are the top 10 most populated states?"
 - "What is the median household income by state?"
-- "Which counties have the highest percentage of college graduates?"
-- "What is the racial diversity breakdown across the US?"
-- "How does poverty rate vary between urban and rural areas?"
-- "What percentage of households have no vehicle?"
+- "What is the average age of people in California?"
+- "Which state has the highest and lowest population?"
+- "What percentage of households have no vehicle by state?"
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `SNOWFLAKE_ACCOUNT` | Yes | — | Snowflake account identifier |
+| `SNOWFLAKE_ACCOUNT` | Yes | — | Account identifier (e.g., `ORGID-ACCOUNTID`) |
 | `SNOWFLAKE_USER` | Yes | — | Snowflake username |
 | `SNOWFLAKE_PASSWORD` | Yes | — | Snowflake password |
 | `SNOWFLAKE_DATABASE` | No | `US_OPEN_CENSUS_DATA` | Database name |
@@ -216,9 +188,9 @@ Send a chat message and receive a streaming SSE response.
 | `SNOWFLAKE_WAREHOUSE` | No | `COMPUTE_WH` | Warehouse name |
 | `SNOWFLAKE_ROLE` | No | `ACCOUNTADMIN` | Role name |
 | `LLM_PROVIDER` | No | `openai` | `openai` or `anthropic` |
-| `OPENAI_API_KEY` | If using OpenAI | — | OpenAI API key |
-| `OPENAI_MODEL` | No | `gpt-4o` | OpenAI model name |
-| `ANTHROPIC_API_KEY` | If using Anthropic | — | Anthropic API key |
-| `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Anthropic model name |
+| `OPENAI_API_KEY` | If OpenAI | — | OpenAI API key |
+| `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model (mini recommended for higher TPM) |
+| `ANTHROPIC_API_KEY` | If Anthropic | — | Anthropic API key |
+| `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Anthropic model |
 | `SESSION_TTL_MINUTES` | No | `30` | Session timeout |
 | `DEBUG` | No | `false` | Enable debug logging |

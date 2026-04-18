@@ -1,77 +1,7 @@
 import React, { useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { Message } from '../types';
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
-}
-
-function renderMarkdown(text: string): string {
-  let html = escapeHtml(text);
-
-  // Code blocks (``` ... ```)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_match, _lang, code) => {
-    return `<pre><code>${code.trim()}</code></pre>`;
-  });
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
-
-  // Tables
-  html = html.replace(
-    /(?:^|\n)(\|.+\|)\n(\|[\s\-:|]+\|)\n((?:\|.+\|\n?)*)/g,
-    (_match, header, _separator, body) => {
-      const headers = header.split('|').filter((c: string) => c.trim());
-      const rows = body.trim().split('\n');
-
-      let table = '<table><thead><tr>';
-      headers.forEach((h: string) => {
-        table += `<th>${h.trim()}</th>`;
-      });
-      table += '</tr></thead><tbody>';
-
-      rows.forEach((row: string) => {
-        const cells = row.split('|').filter((c: string) => c.trim());
-        table += '<tr>';
-        cells.forEach((c: string) => {
-          table += `<td>${c.trim()}</td>`;
-        });
-        table += '</tr>';
-      });
-
-      table += '</tbody></table>';
-      return table;
-    }
-  );
-
-  // Bold
-  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-
-  // Italic
-  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-
-  // Headers
-  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-  // Horizontal rule
-  html = html.replace(/^---$/gm, '<hr />');
-
-  // Unordered lists
-  html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
-  html = html.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul>$1</ul>');
-
-  // Line breaks
-  html = html.replace(/\n/g, '<br />');
-
-  return html;
-}
 
 interface MessageBubbleProps {
   message: Message;
@@ -130,10 +60,21 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
           </div>
         )}
 
-        <div
-          className={`message-text ${message.isError ? 'error' : ''}`}
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(message.content) }}
-        />
+        <div className={`message-text ${message.isError ? 'error' : ''}`}>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              // Render external links with target=_blank for safety
+              a: ({ href, children }) => (
+                <a href={href} target="_blank" rel="noopener noreferrer">
+                  {children}
+                </a>
+              ),
+            }}
+          >
+            {message.content}
+          </ReactMarkdown>
+        </div>
 
         {message.isStreaming && !message.content && (
           <div className="streaming-cursor" />

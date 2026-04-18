@@ -81,6 +81,27 @@ class TestValidateSqlSafety:
         ok, msg = validate_sql_safety(sql)
         assert ok
 
+    def test_allows_get_as_string_literal(self):
+        # Previously blocked by \bGET\b; legitimate queries using GET as data must pass.
+        sql = "SELECT * FROM requests WHERE method = 'GET'"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
+    def test_allows_put_as_string_literal(self):
+        sql = "SELECT * FROM requests WHERE method = 'PUT'"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
+    def test_blocks_snowflake_get_command(self):
+        # Actual Snowflake GET command starts with GET at the statement level
+        # — still blocked because the query doesn't start with SELECT or WITH.
+        ok, msg = validate_sql_safety("GET @stage/file.csv")
+        assert not ok
+
+    def test_blocks_snowflake_put_command(self):
+        ok, msg = validate_sql_safety("PUT file://local.csv @stage")
+        assert not ok
+
 
 # === Quick Topic Check Tests ===
 

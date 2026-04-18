@@ -1,4 +1,13 @@
-from backend.app.services.sql_generator import _clean_sql_response, _wrap_union_arms
+import pytest
+
+from backend.app.services.sql_generator import (
+    _clean_sql_response,
+    _wrap_union_arms,
+    generate_sql,
+    fix_sql,
+    SQLGenResult,
+)
+from backend.tests.conftest import MockLLMProvider
 
 
 class TestWrapUnionArms:
@@ -47,3 +56,189 @@ class TestCleanSqlResponse:
         result = _clean_sql_response(sql)
         assert "(SELECT a LIMIT 1)" in result
         assert "(SELECT b LIMIT 1)" in result
+
+
+SCHEMA_CTX = "TABLE TEST_TABLE columns STATE POPULATION"
+
+
+class TestGenerateSql:
+    @pytest.mark.asyncio
+    async def test_successful_generation(self):
+        llm = MockLLMProvider(
+            generate_response="SELECT STATE, SUM(POPULATION) FROM US_OPEN_CENSUS_DATA.PUBLIC.TEST_TABLE GROUP BY STATE LIMIT 10"
+        )
+        result, sql, reason = await generate_sql(
+            question="Population by state",
+            schema_context=SCHEMA_CTX,
+            history=[],
+            llm_provider=llm,
+            database="US_OPEN_CENSUS_DATA",
+            schema="PUBLIC",
+        )
+        assert result == SQLGenResult.OK
+        assert sql is not None and sql.upper().startswith("SELECT")
+        assert reason is None
+
+    @pytest.mark.asyncio
+    async def test_cannot_answer(self):
+        llm = MockLLMProvider(generate_response="CANNOT_ANSWER: Data not available")
+        result, sql, reason = await generate_sql(
+            question="What is the weather?",
+            schema_context=SCHEMA_CTX,
+            history=[],
+            llm_provider=llm,
+            database="US_OPEN_CENSUS_DATA",
+            schema="PUBLIC",
+        )
+        assert result == SQLGenResult.CANNOT_ANSWER
+        assert sql is None
+        assert reason is not None and "Data not available" in reason
+
+    @pytest.mark.asyncio
+    async def test_api_error(self):
+        llm = MockLLMProvider()
+
+        async def failing(system, messages):
+            raise RuntimeError("OpenAI is down")
+
+        llm.generate = failing
+        result, sql, reason = await generate_sql(
+            question="Test",
+            schema_context=SCHEMA_CTX,
+            history=[],
+            llm_provider=llm,
+            database="US_OPEN_CENSUS_DATA",
+            schema="PUBLIC",
+        )
+        assert result == SQLGenResult.API_ERROR
+        assert sql is None
+        assert reason is not None and "OpenAI is down" in reason
+
+    @pytest.mark.asyncio
+    async def test_strips_markdown_fences(self):
+        llm = MockLLMProvider(
+            generate_response="```sql\nSELECT 1 FROM T\n```"
+        )
+        result, sql, _ = await generate_sql(
+            question="Test",
+            schema_context=SCHEMA_CTX,
+            history=[],
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        assert result == SQLGenResult.OK
+        assert sql == "SELECT 1 FROM T"
+
+    @pytest.mark.asyncio
+    async def test_applies_union_wrapping(self):
+        """Verify that generate_sql output has UNION arms wrapped."""
+        llm = MockLLMProvider(
+            generate_response="SELECT a FROM t LIMIT 1\nUNION ALL\nSELECT b FROM t LIMIT 1"
+        )
+        result, sql, _ = await generate_sql(
+            question="top and bottom",
+            schema_context=SCHEMA_CTX,
+            history=[],
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        assert result == SQLGenResult.OK
+        assert sql is not None
+        assert "(SELECT a FROM t LIMIT 1)" in sql
+        assert "(SELECT b FROM t LIMIT 1)" in sql
+
+    @pytest.mark.asyncio
+    async def test_history_passed_to_llm(self):
+        llm = MockLLMProvider(generate_response="SELECT 1")
+        history = [
+            {"role": "user", "content": "Previous question"},
+            {"role": "assistant", "content": "Previous answer"},
+        ]
+        await generate_sql(
+            question="Follow-up",
+            schema_context=SCHEMA_CTX,
+            history=history,
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        # The mock records messages; last 6 history + current should be sent
+        assert len(llm.calls) == 1
+        messages_sent = llm.calls[0]["messages"]
+        # History entries (excluding last message in real router) + current user question
+        contents = [m["content"] for m in messages_sent]
+        assert "Previous question" in contents
+        assert "Follow-up" in contents
+
+
+class TestFixSql:
+    @pytest.mark.asyncio
+    async def test_successful_fix(self):
+        llm = MockLLMProvider(generate_response="SELECT \"CORRECT_COL\" FROM T")
+        result, sql, reason = await fix_sql(
+            question="test",
+            failed_sql="SELECT WRONG_COL FROM T",
+            error_message="invalid identifier WRONG_COL",
+            schema_context=SCHEMA_CTX,
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        assert result == SQLGenResult.OK
+        assert sql is not None and "CORRECT_COL" in sql
+
+    @pytest.mark.asyncio
+    async def test_fix_cannot_answer(self):
+        llm = MockLLMProvider(generate_response="CANNOT_ANSWER: No such column exists")
+        result, sql, reason = await fix_sql(
+            question="test",
+            failed_sql="SELECT BOGUS FROM T",
+            error_message="invalid identifier",
+            schema_context=SCHEMA_CTX,
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        assert result == SQLGenResult.CANNOT_ANSWER
+        assert sql is None
+
+    @pytest.mark.asyncio
+    async def test_fix_api_error(self):
+        llm = MockLLMProvider()
+
+        async def failing(system, messages):
+            raise RuntimeError("LLM timeout")
+
+        llm.generate = failing
+        result, sql, reason = await fix_sql(
+            question="test",
+            failed_sql="SELECT X FROM T",
+            error_message="err",
+            schema_context=SCHEMA_CTX,
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        assert result == SQLGenResult.API_ERROR
+        assert sql is None
+
+    @pytest.mark.asyncio
+    async def test_fix_passes_error_in_prompt(self):
+        llm = MockLLMProvider(generate_response="SELECT 1 FROM T")
+        await fix_sql(
+            question="original Q",
+            failed_sql="BROKEN SQL",
+            error_message="some snowflake error",
+            schema_context=SCHEMA_CTX,
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+        )
+        # The LLM should receive the error context
+        assert len(llm.calls) == 1
+        user_msg = llm.calls[0]["messages"][0]["content"]
+        assert "BROKEN SQL" in user_msg
+        assert "some snowflake error" in user_msg
+        assert "original Q" in user_msg

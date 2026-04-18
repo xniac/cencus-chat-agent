@@ -1,116 +1,78 @@
 # Reflection
 
-## Development Process
+## Process & Key Decisions
 
-### Phase 1: Architecture & Design
-I began by analyzing the assignment requirements and the US Open Census dataset structure on Snowflake. The core challenge was building a system that could translate arbitrary natural language questions into correct SQL against a schema with hundreds of columns — without hardcoding queries for specific question types.
-
-I chose a **text-to-SQL approach** over a pre-built query library because it maximizes the range of questions the agent can answer. The tradeoff is that LLM-generated SQL can sometimes be incorrect or suboptimal, but with proper schema context and safety validation, this approach scales far better than manually mapping question patterns to queries.
-
-### Phase 2: Backend Implementation
-The backend follows a pipeline architecture:
+I chose a **text-to-SQL** approach over a pre-built query library to maximize the range of answerable questions. The pipeline is a series of small, single-responsibility services:
 
 ```
-Input → Guardrails → SQL Generation → Safety Validation → Execution → Response Generation → Output
+Input → Topic Guardrail → Schema-Aware SQL Gen → Safety Validator
+      → Snowflake (in thread) → [retry on error] → Response Stream
 ```
 
-Each stage is a separate service with a single responsibility. This makes testing straightforward (each service can be tested in isolation with mocks) and makes it easy to swap components (e.g., switching LLM providers).
+### Key architectural choices
+- **Two-phase topic guardrail** — fast keyword/regex check handles ~90% of cases; LLM fallback only for ambiguous inputs. Fails open on LLM errors (availability over false rejections).
+- **Question-aware schema context** — SafeGraph's schema has 70+ tables with 5000+ columns and cryptic ACS codes (`B19013e1`). I load the `METADATA_CBG_FIELD_DESCRIPTIONS` table at startup and filter it by question keywords at request time, with prefix-based matching (so "populated" matches "population"). This keeps prompts under 15K tokens vs. 42K for the full schema.
+- **Retry-on-SQL-error** — LLMs occasionally hallucinate column names (e.g., `B01002ae1`). When Snowflake returns a compilation error, I feed the error back to the LLM and retry once. This recovers most hallucinations without blowing the latency budget.
+- **Deterministic UNION wrapping** — LLMs inconsistently follow Snowflake's requirement to wrap each UNION arm in parentheses. A regex post-processor (`_wrap_union_arms`) handles this reliably, no matter what the LLM outputs.
+- **`asyncio.to_thread` for Snowflake** — the connector is synchronous; wrapping calls in a thread pool keeps the event loop responsive under concurrent load.
+- **Per-step timeouts** (`asyncio.wait_for`) — topic check 15s, SQL gen 45s, SQL fix 30s. Streaming itself has no cap: the 60s requirement is about *first content*, and the user sees `thinking`/`sql`/`data` events within seconds.
+- **SSE over WebSocket** — simpler to implement, debug, and proxy for a request-response chat. Users see tokens as they stream.
+- **In-memory sessions** — TTL-based; `SessionStore` is swappable for Redis without touching callers.
+- **Pluggable LLM provider** — OpenAI and Anthropic share a `Protocol`; switching is one env var.
 
-Key implementation decisions:
-- **Dynamic schema caching** rather than hardcoded schema strings — the schema is fetched from Snowflake's INFORMATION_SCHEMA at startup and refreshed hourly. This means the agent adapts if tables or columns change.
-- **Two-phase topic guardrails** — a fast keyword/regex check handles obvious on-topic and off-topic messages (~90% of cases) without an LLM call. Only ambiguous messages go to the LLM classifier. This saves latency and cost while maintaining accuracy.
-- **SSE streaming** over WebSocket — for a request-response chat pattern, SSE is simpler to implement, debug, and proxy. The user sees tokens as they're generated, keeping perceived latency low.
+## What I'd Improve With More Time
 
-### Phase 3: Frontend & Integration
-The React frontend is intentionally simple — a single-page chat interface with no routing or state management library. The `useChat` hook manages all state and SSE parsing. I prioritized a clean, responsive UI with a dark theme and clear visual hierarchy (user vs. assistant messages, expandable SQL, error states).
-
-## Key Decisions
-
-### Two-Phase LLM Architecture
-The system makes two LLM calls per successful query: one for SQL generation and one for response generation. I considered a single-call approach (LLM generates both SQL and explanation), but separating them provides:
-- Better SQL quality (the SQL generation prompt is focused and constrained)
-- Ability to validate SQL before executing it
-- Streaming of the response while the user sees the SQL immediately
-
-### Dynamic Schema Discovery
-Rather than hardcoding schema information, the system queries Snowflake's INFORMATION_SCHEMA on startup. This adds a startup cost but means:
-- No schema drift — the agent always has current metadata
-- The system works with any Snowflake database, not just a specific snapshot
-- Column comments and row counts provide additional context for the LLM
-
-### Keyword + LLM Guardrails
-Pure keyword matching would miss nuanced off-topic queries; pure LLM classification would add latency to every request. The two-tier approach handles the common cases fast and falls back to the LLM only when needed. The system also fails open — if the LLM classifier errors, the message is allowed through rather than blocked, prioritizing availability over false rejections.
-
-### In-Memory Sessions
-For a demo deployment, in-memory sessions with TTL expiration are sufficient. Redis or a database-backed session store would be needed for production scale, but adding that dependency for a single-instance demo would be overengineering. The code is structured so that `SessionStore` could be replaced with a Redis-backed implementation without changing the rest of the application.
-
-## What I Would Improve With More Time
-
-### Schema-Aware RAG
-For databases with hundreds of columns, including the full schema in every prompt is token-expensive. A retrieval-augmented approach would:
-1. Embed column descriptions and sample values
-2. Retrieve only the most relevant tables/columns for each question
-3. Reduce prompt size and improve SQL accuracy for large schemas
-
-### Query Caching
-Many users ask similar questions. Caching generated SQL (keyed by normalized question + schema hash) would eliminate redundant LLM calls and Snowflake queries for common questions.
-
-### Conversation Summarization
-Currently, the system sends the last N messages as history. For long conversations, this loses early context. A summarization step could compress older messages while preserving key facts (e.g., "the user is interested in California demographics").
-
-### Evaluation Framework
-A structured eval suite with:
-- Known question → expected SQL pairs
-- Accuracy metrics (does the SQL return correct results?)
-- Latency tracking per pipeline stage
-- LLM cost tracking
-
-### Observability
-Structured logging, distributed tracing, and metrics for:
-- SQL generation success rate
-- Snowflake query latency distribution
-- Guardrail classification accuracy
-- Session usage patterns
-
-### Geographic Resolver
-A lookup layer that maps informal place names ("Bay Area", "the Midwest") to specific FIPS codes or state abbreviations for more accurate queries.
-
-### Data Visualizations
-Simple charts (bar, line, map) rendered from query results. The tabular data in the current response format works but isn't as immediately readable as a chart for comparative questions.
+- **Vector-based schema retrieval** — current keyword-matching is fast but coarse. Embedding column descriptions + sample values would handle synonyms and related concepts (e.g., "commute" → columns about travel time to work).
+- **Query caching** — cache (normalized question + schema hash) → SQL to eliminate LLM calls for repeated questions.
+- **Conversation summarization** — truncating history at N messages loses early context; a summarization step would preserve facts like "the user is interested in California demographics."
+- **Evaluation framework** — curated (question, expected-SQL-pattern) pairs with accuracy + latency + cost metrics. Essential for iterating on prompts without regressions.
+- **Observability** — structured logging, metrics on SQL success rate, Snowflake latency percentiles, guardrail accuracy. Currently only basic logging.
+- **Geographic resolver** — map informal place names ("Bay Area", "the Midwest", "NYC") to FIPS codes. Today users have to say "California" not "CA" (though the LLM handles that reasonably).
+- **Data visualizations** — simple charts for comparative questions (bar/map). The markdown tables work but charts read faster.
+- **Rate limiting** — no per-user limits yet. In production this would be essential for cost control.
+- **Multi-provider failover** — circuit-breaker pattern across OpenAI/Anthropic when one provider has an outage.
 
 ## Edge Cases
 
 ### Handled
-- **Off-topic queries**: Two-tier guardrail (keyword + LLM) with clear rejection messages
-- **SQL injection**: Regex-based safety validator blocks INSERT/UPDATE/DELETE/DROP and multi-statement queries
-- **Empty results**: Clear explanation with suggestions for broadening the search
-- **Connection failures**: Graceful degradation with user-friendly error messages
-- **Query timeouts**: Snowflake statement timeout configured (default 50s)
-- **Ambiguous queries**: LLM can respond with CANNOT_ANSWER when it determines the question can't be mapped to available data
-- **Multi-turn conversations**: Session history is passed to both SQL generation and response generation
+- **Off-topic queries** — two-tier guardrail with clear, census-themed rejection
+- **SQL injection / destructive ops** — regex validator blocks everything but SELECT/WITH, multi-statement, and dangerous keywords. Accepts UNION-wrapped arms.
+- **LLM hallucinated columns** — retry loop feeds Snowflake errors back to the LLM for self-correction
+- **LLM API errors** (auth, rate limit, credit balance) — categorized into user-friendly messages, not raw JSON dumps
+- **LLM timeouts** — `asyncio.wait_for` on every non-streaming LLM call; fail gracefully
+- **Snowflake syntax quirks** — deterministic UNION-arm wrapping; explicit rules for `ILIKE` vs `LIKE`, `IFF` vs `IF`, `::FLOAT` for percentage casts
+- **Empty results** — clear explanation + rephrasing suggestions
+- **Snowflake connection / query errors** — typed exceptions surface distinct user messages; sensitive words sanitized from error strings
+- **Client cancellation** — frontend `AbortController` aborts fetch; backend's async generator receives `CancelledError` via `sse-starlette` and stops LLM/Snowflake work
+- **Event loop blocking** — Snowflake calls wrapped in `asyncio.to_thread`; scheduled schema refreshes run in a background task (same mechanism) so the hourly refresh never blocks request handling
+- **Multi-turn coherence** — follow-ups like "what about CA?" see the previous SQL (via `get_history_for_sql_gen`) in addition to the previous answer
+- **Ambiguous "cannot answer"** — `CANNOT_ANSWER:` LLM response is distinguished from API errors and shown with a helpful suggestion
+- **SSE line-ending mismatch** — caught during integration testing: `sse-starlette` emits `\r\n\r\n` event separators, but my frontend/test parsers originally split on `\n\n`. Fixed by normalizing `\r\n` → `\n` before splitting, and also fixed the data-line parser to preserve leading spaces per the SSE spec (otherwise streamed tokens like `" Median"` would lose their leading space)
+- **False-positive SQL safety blocks** — initial validator blocked any query containing the word `GET` or `PUT` (for Snowflake's staging commands), which rejected legitimate queries with `'GET'`/`'PUT'` string literals. Removed those patterns from the denylist; the `must start with SELECT/WITH` check still blocks real `GET`/`PUT` commands
 
-### Identified But Not Fully Addressed
-- **Very broad queries**: "Tell me everything about the US" would generate expensive queries. LIMIT 100 provides a safety net, but query cost estimation would be better.
-- **Conflicting data interpretations**: The same question could be answered at CBG, county, or state level — the system currently lets the LLM decide, but user disambiguation would be more reliable.
-- **Rate limiting**: No per-user or per-session rate limiting implemented. In production, this would be essential to prevent abuse and manage LLM costs.
-- **Concurrent sessions at scale**: In-memory sessions don't survive restarts and don't scale horizontally. Production would need Redis or database-backed sessions.
-- **LLM provider outages**: The system catches errors but doesn't implement retry logic or fallback between providers. A circuit-breaker pattern would be more robust.
+### Identified but not fully addressed
+- **Very broad queries** — "Tell me everything about the US" would still generate expensive aggregates. `LIMIT 100` is a safety net but query-cost estimation would be better.
+- **Conflicting granularity** — the same question could be answered at CBG, county, or state level. Currently the LLM picks; explicit disambiguation UI would be more reliable.
+- **Concurrent sessions at scale** — in-memory sessions don't survive restarts or scale horizontally. Redis-backed sessions for production.
+- **Margin-of-error columns** — ACS provides both `e` (estimate) and `m` (margin) columns. The system uses estimates only. A research-grade tool should surface margins.
+- **"Median of medians" approximation** — averaging per-CBG medians to get state medians is statistically imperfect. The prompt mentions this but users may not notice the caveat.
 
 ## Testing Strategy
 
-### What's Tested
-- **Guardrails** (18 tests): SQL safety validation covers all dangerous operations, multi-statement detection, and edge cases. Topic classification tests cover keywords, patterns, greetings, and LLM fallback including error handling.
-- **Sessions** (12 tests): Session lifecycle (create, retrieve, expire), history management (trimming, LLM-format serialization), and store-level operations (cleanup, concurrency).
-- **Schema Cache** (8 tests): Context generation format, column truncation, fallback behavior on errors, refresh mechanics.
-- **Chat API** (9 tests): End-to-end SSE flow, off-topic rejection (both keyword and LLM paths), error handling (connection errors, empty results, unsafe SQL), session continuity, and CANNOT_ANSWER handling.
+### Coverage (82 tests)
+- **Guardrails (22 tests)** — SQL safety (all dangerous operations, multi-statement, wrapped UNION), topic classification (keywords, patterns, greetings, LLM fallback including fail-open)
+- **Sessions (14 tests)** — lifecycle (create / retrieve / expire), history (trimming, plain vs. SQL-included), store-level concurrency and cleanup
+- **Schema Cache (6 tests)** — context generation, truncation, fallback on connection/generic errors, refresh mechanics
+- **SQL Generator (18 tests)** — `generate_sql` (success, `CANNOT_ANSWER`, API errors, history propagation, markdown cleanup, UNION wrapping), `fix_sql` (retry success, `CANNOT_ANSWER`, API errors, error-passed-through-prompt), `_wrap_union_arms` (UNION/INTERSECT/EXCEPT, already-wrapped, multi-arm)
+- **Response Generator (8 tests)** — `_format_results` (empty, small, >20 truncation, non-JSON-serializable), `generate_response_stream` (token streaming, prompt content, history), `generate_response`
+- **Chat API (9 tests)** — full SSE flow end-to-end, off-topic rejection (both paths), connection errors, empty results, unsafe SQL, session continuity, `CANNOT_ANSWER` handling
 
-### Testing Philosophy
-I focused tests on the **business logic boundaries** — the guardrails, session management, and API integration flow — rather than trying to achieve 100% code coverage. These are the areas where bugs would have the most impact on user experience and security.
+### Philosophy
+Tests target **business logic boundaries** — guardrails, session management, SQL-cleanup, and API integration — rather than chasing 100% coverage. Mocks for Snowflake and LLM keep tests fast, deterministic, and runnable without credentials.
 
-The test suite uses mock objects for external dependencies (Snowflake, LLM providers) to keep tests fast, deterministic, and runnable without credentials. The mocks are designed to be simple and predictable rather than comprehensive simulations.
-
-### What I'd Add
-- **SQL generation quality tests**: A set of (question, expected SQL pattern) pairs to catch regressions in prompt engineering
-- **Frontend tests**: React Testing Library tests for the chat UI components
-- **Load testing**: k6 or Locust scripts to verify the 60-second response time requirement under concurrent users
-- **LLM response quality tests**: Automated checks that the response actually references the query results and doesn't hallucinate data
+### What I'd add
+- **SQL-generation quality regression suite** — curated (question, expected SQL pattern) pairs to catch prompt regressions
+- **Frontend tests** — React Testing Library for SSE parsing, cancel flow, message rendering
+- **Load tests** — k6 / Locust to verify first-byte latency stays under 60s with concurrent users
+- **Disconnect-propagation test** — simulate client abort mid-stream, assert backend stops issuing LLM calls
+- **Response-grounding check** — automated assertion that streamed answers reference actual column values, not hallucinations

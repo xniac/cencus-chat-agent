@@ -3,6 +3,7 @@ services:
     name: census-chat-agent
     runtime: docker
     plan: free
+    healthCheckPath: /api/health
     envVars:
       - key: SNOWFLAKE_ACCOUNT
         sync: false
