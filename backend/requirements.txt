@@ -1,0 +1,13 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+snowflake-connector-python==3.12.4
+openai==1.59.5
+anthropic==0.42.0
+sse-starlette==2.2.1
+python-multipart==0.0.20
+httpx==0.28.1
+pytest==8.3.4
+pytest-asyncio==0.25.0
+pytest-cov==6.0.0

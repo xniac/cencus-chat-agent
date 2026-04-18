@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: census-chat-agent
+    runtime: docker
+    plan: free
+    envVars:
+      - key: SNOWFLAKE_ACCOUNT
+        sync: false
+      - key: SNOWFLAKE_USER
+        sync: false
+      - key: SNOWFLAKE_PASSWORD
+        sync: false
+      - key: SNOWFLAKE_DATABASE
+        value: US_OPEN_CENSUS_DATA
+      - key: SNOWFLAKE_SCHEMA
+        value: PUBLIC
+      - key: SNOWFLAKE_WAREHOUSE
+        value: COMPUTE_WH
+      - key: SNOWFLAKE_ROLE
+        value: ACCOUNTADMIN
+      - key: LLM_PROVIDER
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
