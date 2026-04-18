@@ -33,6 +33,7 @@ RULES:
 8. Use COALESCE for columns that may have NULL values.
 9. Output ONLY the raw SQL query — no explanation, no markdown, no backticks.
 10. If the question cannot be answered with the available data, respond with: CANNOT_ANSWER: <brief reason>
+11. Always geneate a single query. For question asking about both extremes (top and bottom, highest and lowest), use UNION ALL or window functions. Never use semicolons to separate multiple statement.
 
 CRITICAL — COLUMN NAMES:
 - Use ONLY column names that appear VERBATIM in the schema above. Do NOT invent variants.
