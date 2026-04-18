@@ -33,7 +33,14 @@ RULES:
 8. Use COALESCE for columns that may have NULL values.
 9. Output ONLY the raw SQL query — no explanation, no markdown, no backticks.
 10. If the question cannot be answered with the available data, respond with: CANNOT_ANSWER: <brief reason>
-11. Always geneate a single query. For question asking about both extremes (top and bottom, highest and lowest), use UNION ALL or window functions. Never use semicolons to separate multiple statement.
+11. Always generate a single query. Never use semicolons to separate multiple statements.
+12. When combining queries with UNION / UNION ALL / INTERSECT / EXCEPT, Snowflake requires EACH arm to be wrapped in its own parentheses (required whenever an arm contains ORDER BY or LIMIT). Example:
+    (SELECT state, pop FROM t ORDER BY pop DESC LIMIT 1)
+    UNION ALL
+    (SELECT state, pop FROM t ORDER BY pop ASC LIMIT 1)
+13. For percentages and ratios, cast to FLOAT to avoid integer division. E.g. ROUND(SUM(col)::FLOAT / NULLIF(SUM(total), 0) * 100, 2)
+14. Use ILIKE (not LIKE) for case-insensitive string matching.
+15. Use IFF(condition, true_val, false_val) instead of IF().
 
 CRITICAL — COLUMN NAMES:
 - Use ONLY column names that appear VERBATIM in the schema above. Do NOT invent variants.
@@ -43,7 +50,7 @@ CRITICAL — COLUMN NAMES:
 """
 
 
-SQL_FIX_SYSTEM_PROMPT = """You are a SQL expert. The SQL query below failed with an error.
+SQL_FIX_SYSTEM_PROMPT = """You are a SQL expert. The SQL query below failed with an error when query from Snowflake.
 Fix the query using only columns and tables from the schema context.
 
 {schema_context}
@@ -145,6 +152,46 @@ async def fix_sql(
         return SQLGenResult.API_ERROR, None, str(e)
 
 
+_SET_OP_PATTERN = re.compile(r"\b(UNION\s+ALL|UNION|INTERSECT|EXCEPT)\b", re.IGNORECASE)
+
+
+def _wrap_union_arms(sql: str) -> str:
+    """Ensure each arm of a UNION/INTERSECT/EXCEPT is wrapped in parentheses.
+
+    Snowflake requires parenthesized arms when any arm contains ORDER BY or
+    LIMIT. LLMs often omit the parentheses. This post-processor makes the fix
+    deterministically.
+
+    Skips the transformation if the arms already appear to be wrapped.
+    """
+    if not _SET_OP_PATTERN.search(sql):
+        return sql
+
+    # re.split with a capturing group keeps the operators in the output.
+    parts = _SET_OP_PATTERN.split(sql)
+    if len(parts) < 3:
+        return sql
+
+    # parts alternates: [query, op, query, op, query, ...]
+    rebuilt: list[str] = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Query arm
+            stripped = part.strip()
+            if not stripped:
+                continue
+            # Already wrapped? Leave alone.
+            if stripped.startswith("(") and stripped.endswith(")"):
+                rebuilt.append(stripped)
+            else:
+                rebuilt.append(f"({stripped})")
+        else:
+            # Set operator
+            rebuilt.append(part.strip().upper())
+
+    return "\n".join(rebuilt)
+
+
 def _clean_sql_response(response: str) -> str:
     cleaned = response.strip()
 
@@ -160,5 +207,8 @@ def _clean_sql_response(response: str) -> str:
 
     # Strip trailing semicolons
     cleaned = cleaned.rstrip(";").strip()
+
+    # Deterministically wrap UNION/INTERSECT/EXCEPT arms in parentheses
+    cleaned = _wrap_union_arms(cleaned)
 
     return cleaned

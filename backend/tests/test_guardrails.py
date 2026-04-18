@@ -71,6 +71,16 @@ class TestValidateSqlSafety:
         ok, msg = validate_sql_safety("SHOW TABLES")
         assert not ok
 
+    def test_allows_wrapped_union(self):
+        sql = "(SELECT a FROM t1 LIMIT 1) UNION ALL (SELECT b FROM t2 LIMIT 1)"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
+    def test_allows_wrapped_with_cte_union(self):
+        sql = "(WITH c AS (SELECT 1) SELECT * FROM c) UNION (SELECT 2)"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
 
 # === Quick Topic Check Tests ===
 

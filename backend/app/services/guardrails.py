@@ -67,9 +67,11 @@ def validate_sql_safety(sql: str) -> tuple[bool, str]:
         return False, "Empty SQL query"
 
     stripped = sql.strip().upper()
+    # Strip leading parentheses for UNION-wrapped queries: "(SELECT ...) UNION (SELECT ...)"
+    peek = stripped.lstrip("(").lstrip()
 
-    # Must start with SELECT or WITH
-    if not (stripped.startswith("SELECT") or stripped.startswith("WITH")):
+    # Must start with SELECT or WITH (allowing leading parens for wrapped UNION arms)
+    if not (peek.startswith("SELECT") or peek.startswith("WITH")):
         return False, "Only SELECT queries are allowed"
 
     # Check for dangerous patterns
