@@ -102,7 +102,7 @@ export function useChat() {
         const { done, value } = await reader.read();
         if (done) break;
 
-        bufferRef.current += decoder.decode(value, { stream: true });
+        bufferRef.current += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
         // Split on double newline for SSE
         const parts = bufferRef.current.split('\n\n');
