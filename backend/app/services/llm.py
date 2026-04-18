@@ -13,7 +13,7 @@ class LLMProvider(Protocol):
 
 class OpenAIProvider:
     def __init__(self):
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
+        self.client = AsyncOpenAI(api_key=settings.openai_api_key, timeout=60.0)
         self.model = settings.openai_model
 
     async def generate(self, system: str, messages: list[dict]) -> str:
@@ -42,7 +42,7 @@ class OpenAIProvider:
 
 class AnthropicProvider:
     def __init__(self):
-        self.client = AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self.client = AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=60.0)
         self.model = settings.anthropic_model
 
     async def generate(self, system: str, messages: list[dict]) -> str:

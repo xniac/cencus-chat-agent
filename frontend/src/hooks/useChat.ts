@@ -225,10 +225,12 @@ export function useChat() {
 
   const cancelRequest = useCallback(() => {
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
   }, []);
 
   const clearChat = useCallback(() => {
     abortControllerRef.current?.abort();
+    abortControllerRef.current = null;
     setState({ ...initialState });
   }, []);
 

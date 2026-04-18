@@ -26,6 +26,8 @@ class SnowflakeClient:
             "schema": settings.snowflake_schema,
             "warehouse": settings.snowflake_warehouse,
             "role": settings.snowflake_role,
+            "login_timeout": 30,
+            "network_timeout": 60,
         }
 
     @contextmanager

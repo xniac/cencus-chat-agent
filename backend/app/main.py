@@ -48,9 +48,9 @@ async def lifespan(app: FastAPI):
     session_store = SessionStore()
     app.state.session_store = session_store
 
-    # Refresh schema cache on startup
+    # Refresh schema cache on startup (runs in a thread to avoid blocking the event loop)
     try:
-        schema_cache.refresh()
+        await asyncio.to_thread(schema_cache.refresh)
         logger.info("Schema cache initialized")
     except Exception as e:
         logger.warning(f"Failed to initialize schema cache: {e}")

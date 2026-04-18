@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import AsyncIterator
 
@@ -56,20 +57,13 @@ async def chat(request: Request, body: ChatRequest):
     session = await session_store.get_or_create(body.session_id)
 
     async def event_stream() -> AsyncIterator[dict]:
-        async def check_disconnect() -> bool:
-            """Return True if the client has disconnected (e.g., hit stop)."""
-            try:
-                return await request.is_disconnected()
-            except Exception:
-                return False
-
+        # Note: we don't need manual disconnect checks. sse-starlette cancels
+        # this generator (raising CancelledError) when the client disconnects,
+        # which propagates through `await` points and stops the LLM/Snowflake
+        # calls naturally.
         try:
             # Step 1: Topic guardrail
             yield _sse_event("thinking", "Checking if your question is about census data...")
-
-            if await check_disconnect():
-                logger.info("Client disconnected before topic check — aborting")
-                return
 
             topic_result = quick_topic_check(body.message)
             if topic_result is None:
@@ -87,10 +81,6 @@ async def chat(request: Request, body: ChatRequest):
 
             # Add user message to session
             session.add_message("user", body.message)
-
-            if await check_disconnect():
-                logger.info("Client disconnected before SQL generation — aborting")
-                return
 
             # Step 2: Generate SQL
             yield _sse_event("thinking", "Generating SQL query...")
@@ -144,15 +134,12 @@ async def chat(request: Request, body: ChatRequest):
 
             yield _sse_event("sql", sql)
 
-            if await check_disconnect():
-                logger.info("Client disconnected before Snowflake query — aborting")
-                return
-
-            # Step 4: Execute query
+            # Step 4: Execute query — run in a worker thread so the event loop
+            # isn't blocked while Snowflake processes the query
             yield _sse_event("thinking", "Querying Snowflake...")
 
             try:
-                results = snowflake.execute_query(sql)
+                results = await asyncio.to_thread(snowflake.execute_query, sql)
             except SnowflakeConnectionError as e:
                 msg = "I'm having trouble connecting to the database. Please try again in a moment."
                 logger.error(f"Snowflake connection error: {e}")
@@ -189,7 +176,6 @@ async def chat(request: Request, body: ChatRequest):
             yield _sse_event("thinking", "Analyzing results...")
 
             full_response = ""
-            token_count = 0
             async for token in generate_response_stream(
                 question=body.message,
                 sql=sql,
@@ -197,12 +183,6 @@ async def chat(request: Request, body: ChatRequest):
                 history=history[:-1],
                 llm_provider=llm,
             ):
-                # Check for client disconnect every 5 tokens (balance between
-                # responsiveness and overhead)
-                token_count += 1
-                if token_count % 5 == 0 and await check_disconnect():
-                    logger.info("Client disconnected during streaming — aborting")
-                    return
                 full_response += token
                 yield _sse_event("answer_token", token)
 
@@ -222,7 +202,7 @@ async def chat(request: Request, body: ChatRequest):
 @router.get("/health")
 async def health(request: Request):
     snowflake = request.app.state.snowflake
-    connected = snowflake.test_connection()
+    connected = await asyncio.to_thread(snowflake.test_connection)
     return HealthResponse(
         status="healthy" if connected else "degraded",
         snowflake_connected=connected,
