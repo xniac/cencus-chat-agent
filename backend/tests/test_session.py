@@ -27,6 +27,26 @@ class TestConversationSession:
         assert "sql" not in history[1]
         assert history[1]["content"] == "Here are the results"
 
+    def test_get_history_for_sql_gen_includes_sql(self):
+        session = ConversationSession()
+        session.add_message("user", "Query population")
+        session.add_message("assistant", "Here are the results", sql="SELECT * FROM t")
+        history = session.get_history_for_sql_gen()
+        assert len(history) == 2
+        # User messages unchanged
+        assert history[0]["content"] == "Query population"
+        # Assistant message should include both SQL and response
+        assert "SELECT * FROM t" in history[1]["content"]
+        assert "Here are the results" in history[1]["content"]
+
+    def test_get_history_for_sql_gen_without_sql(self):
+        """Assistant messages without SQL (e.g., error responses) shouldn't break."""
+        session = ConversationSession()
+        session.add_message("user", "Hello")
+        session.add_message("assistant", "Hi there!")
+        history = session.get_history_for_sql_gen()
+        assert history[1]["content"] == "Hi there!"
+
     def test_max_history_trimming(self):
         with patch("backend.app.services.session.settings") as mock_settings:
             mock_settings.max_history = 5

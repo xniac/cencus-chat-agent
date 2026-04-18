@@ -11,7 +11,7 @@ from backend.app.services.guardrails import (
     llm_topic_check,
     validate_sql_safety,
 )
-from backend.app.services.sql_generator import generate_sql, SQLGenResult
+from backend.app.services.sql_generator import generate_sql, fix_sql, SQLGenResult
 from backend.app.services.response_generator import generate_response_stream
 from backend.app.services.snowflake_client import SnowflakeConnectionError, SnowflakeQueryError
 
@@ -85,17 +85,24 @@ async def chat(request: Request, body: ChatRequest):
             # Step 2: Generate SQL
             yield _sse_event("thinking", "Generating SQL query...")
 
-            history = session.get_history_for_llm()
-            # Use question-aware schema context to prioritize relevant tables
-            schema_ctx = (
-                schema_cache.get_context_for_question(body.message)
+            # History for SQL generation INCLUDES previous SQL for multi-turn coherence
+            history_with_sql = session.get_history_for_sql_gen()
+            # History for response generation omits SQL (just role+content)
+            history_plain = session.get_history_for_llm()
+
+            # Use question-aware schema context to prioritize relevant tables.
+            # Runs in a thread because it may trigger a blocking refresh if the
+            # cache is stale.
+            schema_ctx = await asyncio.to_thread(
+                schema_cache.get_context_for_question
                 if hasattr(schema_cache, "get_context_for_question")
-                else schema_cache.schema_context
+                else (lambda _q: schema_cache.schema_context),
+                body.message,
             )
             result, sql, reason = await generate_sql(
                 question=body.message,
                 schema_context=schema_ctx,
-                history=history[:-1],  # Exclude the current message (already in prompt)
+                history=history_with_sql[:-1],  # Exclude the current user message (passed in separately)
                 llm_provider=llm,
                 database=db,
                 schema=schema,
@@ -135,7 +142,9 @@ async def chat(request: Request, body: ChatRequest):
             yield _sse_event("sql", sql)
 
             # Step 4: Execute query — run in a worker thread so the event loop
-            # isn't blocked while Snowflake processes the query
+            # isn't blocked while Snowflake processes the query.
+            # Retry once with LLM self-correction if the query fails with a
+            # SQL compilation error (common text-to-SQL failure mode).
             yield _sse_event("thinking", "Querying Snowflake...")
 
             try:
@@ -149,13 +158,52 @@ async def chat(request: Request, body: ChatRequest):
                 yield _sse_event("done", "")
                 return
             except SnowflakeQueryError as e:
-                msg = f"The query encountered an error: {str(e)}. Let me try to help differently."
-                logger.error(f"Snowflake query error: {e}")
-                session.add_message("assistant", msg)
-                yield _sse_event("error", msg)
-                yield _sse_event("session_id", session.session_id)
-                yield _sse_event("done", "")
-                return
+                logger.warning(f"SQL error on first attempt, asking LLM to fix: {e}")
+                yield _sse_event("thinking", "Fixing SQL error and retrying...")
+
+                fix_result, fixed_sql, fix_reason = await fix_sql(
+                    question=body.message,
+                    failed_sql=sql,
+                    error_message=str(e),
+                    schema_context=schema_ctx,
+                    llm_provider=llm,
+                    database=db,
+                    schema=schema,
+                )
+
+                if fix_result != SQLGenResult.OK or not fixed_sql:
+                    msg = f"The query couldn't be fixed automatically. {fix_reason or str(e)}"
+                    session.add_message("assistant", msg)
+                    yield _sse_event("error", msg)
+                    yield _sse_event("session_id", session.session_id)
+                    yield _sse_event("done", "")
+                    return
+
+                # Validate the fixed SQL is still safe
+                is_safe_fixed, safety_err_fixed = validate_sql_safety(fixed_sql)
+                if not is_safe_fixed:
+                    msg = f"The corrected query was blocked for safety: {safety_err_fixed}"
+                    session.add_message("assistant", msg)
+                    yield _sse_event("error", msg)
+                    yield _sse_event("session_id", session.session_id)
+                    yield _sse_event("done", "")
+                    return
+
+                sql = fixed_sql
+                yield _sse_event("sql", sql)
+                try:
+                    results = await asyncio.to_thread(snowflake.execute_query, sql)
+                except (SnowflakeConnectionError, SnowflakeQueryError) as e2:
+                    msg = (
+                        f"Even after retrying, the query failed: {str(e2)}. "
+                        "Try rephrasing your question."
+                    )
+                    logger.error(f"Snowflake query error on retry: {e2}")
+                    session.add_message("assistant", msg)
+                    yield _sse_event("error", msg)
+                    yield _sse_event("session_id", session.session_id)
+                    yield _sse_event("done", "")
+                    return
 
             # Step 5: Handle empty results
             if not results:
@@ -180,7 +228,7 @@ async def chat(request: Request, body: ChatRequest):
                 question=body.message,
                 sql=sql,
                 results=results,
-                history=history[:-1],
+                history=history_plain[:-1],
                 llm_provider=llm,
             ):
                 full_response += token

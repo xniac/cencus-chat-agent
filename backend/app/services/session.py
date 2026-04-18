@@ -23,6 +23,19 @@ class ConversationSession:
     def get_history_for_llm(self) -> list[dict]:
         return [{"role": m.role, "content": m.content} for m in self.messages]
 
+    def get_history_for_sql_gen(self) -> list[dict]:
+        """Like get_history_for_llm, but includes SQL in assistant messages
+        so the LLM can see previous queries when generating follow-ups.
+        """
+        result = []
+        for m in self.messages:
+            if m.role == "assistant" and m.sql:
+                content = f"[Previous SQL]\n{m.sql}\n\n[Response]\n{m.content}"
+            else:
+                content = m.content
+            result.append({"role": m.role, "content": content})
+        return result
+
     def is_expired(self) -> bool:
         ttl = timedelta(minutes=settings.session_ttl_minutes)
         return datetime.now(timezone.utc) - self.last_active > ttl

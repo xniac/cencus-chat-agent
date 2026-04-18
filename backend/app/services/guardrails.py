@@ -1,8 +1,11 @@
+import asyncio
 import re
 import logging
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+TOPIC_CHECK_TIMEOUT = 15.0  # seconds
 
 DANGEROUS_SQL_PATTERNS = [
     r"\bINSERT\b",
@@ -107,8 +110,14 @@ def quick_topic_check(message: str) -> Optional[str]:
 async def llm_topic_check(message: str, llm_provider) -> bool:
     try:
         messages = [{"role": "user", "content": message}]
-        response = await llm_provider.generate(TOPIC_GUARD_SYSTEM_PROMPT, messages)
+        response = await asyncio.wait_for(
+            llm_provider.generate(TOPIC_GUARD_SYSTEM_PROMPT, messages),
+            timeout=TOPIC_CHECK_TIMEOUT,
+        )
         return "on_topic" in response.lower()
+    except asyncio.TimeoutError:
+        logger.warning("LLM topic check timed out — allowing message")
+        return True  # Fail open
     except Exception as e:
         logger.warning(f"LLM topic check failed, allowing message: {e}")
         return True  # Fail open
