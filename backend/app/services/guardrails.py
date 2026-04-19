@@ -67,11 +67,31 @@ TOPIC_GUARD_SYSTEM_PROMPT = (
 )
 
 
+_STRING_LITERAL_RE = re.compile(
+    r"'(?:[^']|'')*'"  # single-quoted, doubled-quote escape
+    r"|"
+    r'"(?:[^"\\]|\\.)*"',  # double-quoted identifier
+)
+
+
+def _strip_string_literals(sql: str) -> str:
+    """Replace string-literal and quoted-identifier contents with placeholders
+    so denylist regexes don't match on data values. E.g., a query filtering
+    by `method = 'GET'` should not be blocked by a GET denylist; likewise
+    `WHERE col = 'INSERT'` should not trigger the INSERT denylist.
+    """
+    return _STRING_LITERAL_RE.sub("''", sql)
+
+
 def validate_sql_safety(sql: str) -> tuple[bool, str]:
     if not sql or not sql.strip():
         return False, "Empty SQL query"
 
-    stripped = sql.strip().upper()
+    # Remove string literals & quoted identifiers before running denylist / semicolon
+    # checks to avoid false positives on data values like `WHERE col = 'INSERT'`.
+    sql_for_checks = _strip_string_literals(sql)
+
+    stripped = sql_for_checks.strip().upper()
     # Strip leading parentheses for UNION-wrapped queries: "(SELECT ...) UNION (SELECT ...)"
     peek = stripped.lstrip("(").lstrip()
 
@@ -79,13 +99,14 @@ def validate_sql_safety(sql: str) -> tuple[bool, str]:
     if not (peek.startswith("SELECT") or peek.startswith("WITH")):
         return False, "Only SELECT queries are allowed"
 
-    # Check for dangerous patterns
+    # Check for dangerous patterns (against the string-stripped copy)
     for pattern in DANGEROUS_SQL_PATTERNS:
-        if re.search(pattern, sql, re.IGNORECASE):
+        if re.search(pattern, sql_for_checks, re.IGNORECASE):
             return False, f"Query contains disallowed operation"
 
-    # Check for multi-statement (semicolons not at the very end)
-    sql_trimmed = sql.strip().rstrip(";")
+    # Check for multi-statement (semicolons not at the very end, ignoring those
+    # inside string literals).
+    sql_trimmed = sql_for_checks.strip().rstrip(";")
     if ";" in sql_trimmed:
         return False, "Multi-statement queries are not allowed"
 

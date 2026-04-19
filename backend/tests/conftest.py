@@ -1,12 +1,7 @@
-import asyncio
 from typing import AsyncIterator
-from unittest.mock import MagicMock
 
 import pytest
-from fastapi.testclient import TestClient
 from sse_starlette.sse import AppStatus
-
-from backend.app.main import app
 
 
 @pytest.fixture(autouse=True)
@@ -116,13 +111,3 @@ def session_store():
     return SessionStore()
 
 
-@pytest.fixture
-def app_client(mock_llm, mock_snowflake, mock_schema_cache, session_store):
-    app.state.snowflake = mock_snowflake
-    app.state.llm = mock_llm
-    app.state.schema_cache = mock_schema_cache
-    app.state.session_store = session_store
-    app.state.database = "US_OPEN_CENSUS_DATA"
-    app.state.schema = "PUBLIC"
-    app.state.llm_provider_name = "openai"
-    return TestClient(app)

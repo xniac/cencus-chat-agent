@@ -7,5 +7,5 @@ services:
       - "8000:8000"
     env_file:
       - .env
-    environment:
-      - DEBUG=true
+    # Note: DEBUG logs include full prompt/schema context and should stay off
+    # by default. Set DEBUG=true in your .env if you need verbose logging.

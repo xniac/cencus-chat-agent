@@ -59,13 +59,13 @@ Input → Topic Guardrail → Schema-Aware SQL Gen → Safety Validator
 
 ## Testing Strategy
 
-### Coverage (82 tests)
-- **Guardrails (22 tests)** — SQL safety (all dangerous operations, multi-statement, wrapped UNION), topic classification (keywords, patterns, greetings, LLM fallback including fail-open)
-- **Sessions (14 tests)** — lifecycle (create / retrieve / expire), history (trimming, plain vs. SQL-included), store-level concurrency and cleanup
-- **Schema Cache (6 tests)** — context generation, truncation, fallback on connection/generic errors, refresh mechanics
-- **SQL Generator (18 tests)** — `generate_sql` (success, `CANNOT_ANSWER`, API errors, history propagation, markdown cleanup, UNION wrapping), `fix_sql` (retry success, `CANNOT_ANSWER`, API errors, error-passed-through-prompt), `_wrap_union_arms` (UNION/INTERSECT/EXCEPT, already-wrapped, multi-arm)
-- **Response Generator (8 tests)** — `_format_results` (empty, small, >20 truncation, non-JSON-serializable), `generate_response_stream` (token streaming, prompt content, history), `generate_response`
-- **Chat API (9 tests)** — full SSE flow end-to-end, off-topic rejection (both paths), connection errors, empty results, unsafe SQL, session continuity, `CANNOT_ANSWER` handling
+### Coverage (104 tests)
+- **Guardrails (37 tests)** — SQL safety (dangerous operations blocked, multi-statement, wrapped UNION accepted, string-literal false positives eliminated), topic classification (keywords, patterns, greetings, LLM fallback with history, fail-open)
+- **Sessions (15 tests)** — lifecycle (create / retrieve / expire), history (trimming, plain vs. SQL-included), store-level concurrency, eager cleanup on expired access
+- **Schema Cache (14 tests)** — context generation, truncation, fallback on errors, refresh mechanics, synonym expansion (racial, housing, job, kids, plurals), stop-word filtering
+- **SQL Generator (19 tests)** — `generate_sql` (success, `CANNOT_ANSWER`, API errors, history propagation, markdown cleanup, UNION wrapping applied), `fix_sql` (retry success/failure, error context, history propagation), `_wrap_union_arms` (UNION/INTERSECT/EXCEPT, already-wrapped, multi-arm)
+- **Response Generator (8 tests)** — `_format_results` (empty, small, >20 truncation, non-JSON-serializable), `generate_response_stream` (tokens, prompt content, history), `generate_response`
+- **Chat API (11 tests)** — full SSE flow end-to-end, off-topic rejection (keyword + LLM paths), connection errors, empty results, unsafe SQL, session continuity, `CANNOT_ANSWER` handling, ambiguous-follow-up trust-in-active-session, still-blocks-off-topic-in-active-session
 
 ### Philosophy
 Tests target **business logic boundaries** — guardrails, session management, SQL-cleanup, and API integration — rather than chasing 100% coverage. Mocks for Snowflake and LLM keep tests fast, deterministic, and runnable without credentials.

@@ -102,6 +102,29 @@ class TestValidateSqlSafety:
         ok, msg = validate_sql_safety("PUT file://local.csv @stage")
         assert not ok
 
+    def test_allows_insert_as_string_literal(self):
+        """Regression: INSERT in a string value shouldn't trigger the denylist."""
+        sql = "SELECT * FROM logs WHERE action = 'INSERT'"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
+    def test_allows_drop_in_like_pattern(self):
+        sql = "SELECT * FROM msgs WHERE body LIKE '%DROP TABLE%'"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
+    def test_allows_semicolon_inside_string(self):
+        """Semicolons inside string literals should not be treated as multi-statement."""
+        sql = "SELECT * FROM t WHERE note = 'a;b;c'"
+        ok, msg = validate_sql_safety(sql)
+        assert ok
+
+    def test_still_blocks_real_insert(self):
+        """Sanity: the fix shouldn't let an actual INSERT slip through."""
+        sql = "SELECT * FROM t; INSERT INTO t VALUES (1)"
+        ok, msg = validate_sql_safety(sql)
+        assert not ok
+
 
 # === Quick Topic Check Tests ===
 

@@ -54,9 +54,12 @@ class SessionStore:
     async def get_or_create(self, session_id: Optional[str] = None) -> ConversationSession:
         async with self._get_lock():
             if session_id and session_id in self._sessions:
-                session = self._sessions[session_id]
-                if not session.is_expired():
-                    return session
+                existing = self._sessions[session_id]
+                if not existing.is_expired():
+                    return existing
+                # Expired — drop it immediately rather than wait for the
+                # periodic cleanup loop, to avoid leaking on session-id churn.
+                del self._sessions[session_id]
             # Create new session
             session = ConversationSession()
             self._sessions[session.session_id] = session

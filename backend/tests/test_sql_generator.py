@@ -236,9 +236,31 @@ class TestFixSql:
             database="DB",
             schema="S",
         )
-        # The LLM should receive the error context
+        # The LLM should receive the error context (it's in the LAST user message)
         assert len(llm.calls) == 1
-        user_msg = llm.calls[0]["messages"][0]["content"]
+        user_msg = llm.calls[0]["messages"][-1]["content"]
         assert "BROKEN SQL" in user_msg
         assert "some snowflake error" in user_msg
         assert "original Q" in user_msg
+
+    @pytest.mark.asyncio
+    async def test_fix_includes_history(self):
+        """fix_sql should pass conversation history so follow-ups retain context."""
+        llm = MockLLMProvider(generate_response="SELECT 1 FROM T")
+        history = [
+            {"role": "user", "content": "Top 5 populated states"},
+            {"role": "assistant", "content": "CA TX FL..."},
+        ]
+        await fix_sql(
+            question="What about the bottom 5?",
+            failed_sql="BROKEN SQL",
+            error_message="err",
+            schema_context=SCHEMA_CTX,
+            llm_provider=llm,
+            database="DB",
+            schema="S",
+            history=history,
+        )
+        messages = llm.calls[0]["messages"]
+        contents = [m["content"] for m in messages]
+        assert any("Top 5 populated states" in c for c in contents)

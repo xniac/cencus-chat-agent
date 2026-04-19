@@ -127,8 +127,12 @@ async def fix_sql(
     llm_provider,
     database: str,
     schema: str,
+    history: list[dict] | None = None,
 ) -> tuple[SQLGenResult, Optional[str], Optional[str]]:
     """Ask the LLM to fix a SQL query that failed with a Snowflake error.
+
+    `history` is optional conversation history so follow-up fixes (e.g.,
+    "the bottom 5") retain the context of earlier turns.
 
     Returns the same tuple shape as generate_sql().
     """
@@ -143,9 +147,12 @@ async def fix_sql(
         f"Snowflake error:\n{error_message}\n\n"
         "Please produce a corrected SQL query."
     )
+    # Include last 6 history messages so the fix LLM knows about prior turns
+    recent_history = (history or [])[-6:]
+    messages = recent_history + [{"role": "user", "content": user_msg}]
     try:
         response = await asyncio.wait_for(
-            llm_provider.generate(system_prompt, [{"role": "user", "content": user_msg}]),
+            llm_provider.generate(system_prompt, messages),
             timeout=SQL_FIX_TIMEOUT,
         )
         response = response.strip()

@@ -87,7 +87,7 @@ An interactive chat agent that answers natural language questions about US popul
 │   │       ├── session.py             # In-memory session store
 │   │       ├── snowflake_client.py    # Query execution + sanitization
 │   │       └── sql_generator.py       # NL→SQL + retry-fix + UNION wrapper
-│   └── tests/           # 82 tests — see REFLECTION.md for breakdown
+│   └── tests/           # 104 tests — see REFLECTION.md for breakdown
 ├── frontend/
 │   ├── src/
 │   │   ├── App.tsx + App.css      # Main UI (dark theme)
@@ -207,5 +207,9 @@ Sessions have a 30-minute sliding TTL and retain the last 20 messages. The `sess
 | `OPENAI_MODEL` | No | `gpt-4o-mini` | OpenAI model. **Recommended** for new accounts — the schema prompt is ~12k tokens, and `gpt-4o` free-tier has a 30k TPM cap which fails on longer conversations. `gpt-4o-mini` has ~200k TPM and is cheaper. |
 | `ANTHROPIC_API_KEY` | If Anthropic | — | Anthropic API key |
 | `ANTHROPIC_MODEL` | No | `claude-sonnet-4-20250514` | Anthropic model |
-| `SESSION_TTL_MINUTES` | No | `30` | Session timeout |
-| `DEBUG` | No | `false` | Enable debug logging |
+| `SNOWFLAKE_QUERY_TIMEOUT` | No | `50` | Snowflake STATEMENT_TIMEOUT in seconds (per-query cap) |
+| `SESSION_TTL_MINUTES` | No | `30` | Session sliding TTL |
+| `MAX_HISTORY` | No | `20` | Max messages retained per session |
+| `APP_TITLE` | No | `US Census Chat Agent` | Shown in the FastAPI docs title |
+| `CORS_ORIGINS` | No | `localhost:3000,localhost:5173` | Comma-separated allowed origins for cross-origin requests. Leave empty if frontend is served from the same origin. |
+| `DEBUG` | No | `false` | Enable debug logging (verbose, including prompt contents — do not enable in production) |

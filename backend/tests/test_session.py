@@ -112,3 +112,19 @@ class TestSessionStore:
         session1.last_active = datetime.now(timezone.utc) - timedelta(minutes=60)
         await store.cleanup_expired()
         assert store.active_count == 1
+
+    @pytest.mark.asyncio
+    async def test_expired_session_eagerly_removed_on_access(self):
+        """When get_or_create is called with an expired session_id, the old
+        entry should be deleted immediately (not wait for periodic cleanup).
+        """
+        store = SessionStore()
+        session1 = await store.get_or_create()
+        session1.last_active = datetime.now(timezone.utc) - timedelta(minutes=60)
+        old_id = session1.session_id
+
+        session2 = await store.get_or_create(old_id)
+        # The expired entry shouldn't still be in the store
+        assert old_id not in store._sessions
+        assert session2.session_id != old_id
+        assert store.active_count == 1

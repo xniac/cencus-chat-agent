@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from typing import AsyncIterator
 
 from fastapi import APIRouter, Request
@@ -19,14 +20,15 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
+# Health check cache — avoid opening a fresh Snowflake connection on every
+# scheduler ping (Render hits /api/health ~every 30s). Short TTL so legitimate
+# outages still surface within about a minute.
+_HEALTH_TTL_SECONDS = 30
+_health_cache: dict[str, float | bool] = {"ok": False, "timestamp": 0.0}
+
 
 def _sse_event(event: str, data: str) -> dict:
     return {"event": event, "data": data}
-
-
-def _is_llm_api_error(error_msg: str) -> bool:
-    lower = error_msg.lower()
-    return any(k in lower for k in ["credit balance", "invalid_request_error", "401", "403", "authentication", "api key", "rate limit", "429"])
 
 
 def _friendly_llm_error(error_msg: str) -> str:
@@ -192,6 +194,7 @@ async def chat(request: Request, body: ChatRequest):
                     llm_provider=llm,
                     database=db,
                     schema=schema,
+                    history=history_with_sql[:-1],
                 )
 
                 if fix_result != SQLGenResult.OK or not fixed_sql:
@@ -273,7 +276,15 @@ async def chat(request: Request, body: ChatRequest):
 @router.get("/health")
 async def health(request: Request):
     snowflake = request.app.state.snowflake
-    connected = await asyncio.to_thread(snowflake.test_connection)
+    now = time.time()
+    # Use cached result if fresh (avoids per-probe Snowflake login under
+    # Render's ~30s health check interval).
+    if now - float(_health_cache["timestamp"]) < _HEALTH_TTL_SECONDS:
+        connected = bool(_health_cache["ok"])
+    else:
+        connected = await asyncio.to_thread(snowflake.test_connection)
+        _health_cache["ok"] = connected
+        _health_cache["timestamp"] = now
     return HealthResponse(
         status="healthy" if connected else "degraded",
         snowflake_connected=connected,

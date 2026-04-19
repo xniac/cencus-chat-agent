@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     # App
     app_title: str = "US Census Chat Agent"
     debug: bool = False
+    # Comma-separated allowed origins for CORS. Leave empty to serve only
+    # same-origin requests (the FastAPI backend serving the built React app).
+    # Example for separate frontend/backend: "https://my-frontend.com,https://localhost:3000"
+    cors_origins: str = ""
 
     model_config = {"env_file": [str(p) for p in _ENV_PATHS if p.exists()] or ".env"}
 

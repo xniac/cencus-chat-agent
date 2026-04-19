@@ -88,13 +88,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.app_title, lifespan=lifespan)
 
-# CORS — allow all origins for demo
+# CORS — in production the frontend is served from the same origin as the
+# backend (FastAPI mounts the built React app), so cross-origin requests are
+# only needed for local dev (Vite on :3000 → FastAPI on :8000). Pin to an
+# explicit list; leave credentials off since we don't use cookies.
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+if not _cors_origins:
+    # Sensible defaults: localhost dev server ports for local development.
+    _cors_origins = [
+        "http://localhost:3000",
+        "http://localhost:5173",  # Vite default
+        "http://127.0.0.1:3000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 # Include API routes
