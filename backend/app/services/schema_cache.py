@@ -13,6 +13,101 @@ MAX_DESCRIPTIONS_IN_CONTEXT = 120
 TOP_N = 5
 MID_N = 10
 
+# Census-specific synonym map: when a question contains a key, we expand the
+# keyword set to also include the values. This lets "racial" match "race" in
+# field descriptions, "housing" match "house", "kids" match "children", etc.
+# Additions are cheap — add a new entry when you see a failure mode.
+CENSUS_SYNONYMS: dict[str, set[str]] = {
+    # Race & ethnicity
+    "racial": {"race", "ethnic", "ethnicity", "hispanic"},
+    "race": {"ethnic", "ethnicity", "hispanic"},
+    "ethnicity": {"race", "ethnic", "hispanic"},
+    "diversity": {"race", "ethnic", "hispanic"},
+    "latino": {"hispanic"},
+    # Population
+    "populated": {"population", "people", "residents", "total"},
+    "people": {"population", "residents"},
+    "residents": {"population", "people"},
+    # Housing
+    "housing": {"house", "household", "home", "dwelling", "unit"},
+    "house": {"housing", "household", "home", "dwelling"},
+    "household": {"housing", "house", "home"},
+    "home": {"housing", "household", "house"},
+    "homes": {"housing", "household", "house"},
+    "rent": {"rental", "housing"},
+    # Income & wealth
+    "income": {"earnings", "wage", "salary", "household"},
+    "earnings": {"income", "wage", "salary"},
+    "wage": {"income", "earnings", "salary"},
+    "wealth": {"income", "earnings"},
+    "salary": {"income", "earnings", "wage"},
+    # Age
+    "old": {"age", "elderly", "senior"},
+    "elderly": {"age", "senior"},
+    "young": {"age", "youth", "child"},
+    "kid": {"child", "children", "youth"},
+    "kids": {"child", "children", "youth"},
+    "youth": {"child", "children"},
+    "child": {"children", "youth"},
+    "children": {"child", "youth"},
+    # Employment
+    "job": {"employ", "employed", "employment", "labor", "worker", "work"},
+    "jobs": {"employ", "employed", "employment", "labor", "worker", "work"},
+    "employed": {"employ", "employment", "labor", "worker"},
+    "unemployed": {"unemploy", "unemployment", "labor"},
+    "employment": {"employ", "labor", "worker", "job"},
+    "career": {"employ", "occupation", "job"},
+    "occupation": {"employ", "job", "work"},
+    "worker": {"employ", "labor", "job", "work"},
+    # Education
+    "school": {"education", "student", "degree", "college"},
+    "schools": {"education", "student", "degree", "college"},
+    "education": {"school", "degree", "college", "attainment"},
+    "educational": {"education", "school", "degree", "college", "attainment"},
+    "college": {"education", "degree", "bachelor", "university"},
+    "colleges": {"education", "degree", "bachelor", "university"},
+    "university": {"education", "degree", "college", "bachelor"},
+    "degree": {"education", "college", "bachelor", "master", "doctorate"},
+    "degrees": {"education", "college", "bachelor", "master", "doctorate"},
+    "graduate": {"education", "degree", "college", "attainment", "bachelor"},
+    "graduates": {"education", "degree", "college", "attainment", "bachelor"},
+    "graduated": {"education", "degree", "college", "attainment", "bachelor"},
+    "bachelor": {"education", "degree", "college", "attainment"},
+    "masters": {"education", "degree", "college", "attainment"},
+    "student": {"school", "education"},
+    "students": {"school", "education"},
+    "literacy": {"education", "school"},
+    # Poverty
+    "poverty": {"poor", "low-income", "income"},
+    "poor": {"poverty", "low-income"},
+    # Commute & transportation
+    "commute": {"travel", "transport", "transportation", "vehicle"},
+    "transportation": {"commute", "travel", "transport", "vehicle"},
+    "vehicle": {"car", "transport", "commute"},
+    "car": {"vehicle", "transport", "commute"},
+    # Language
+    "spanish": {"language", "english"},
+    "english": {"language"},
+    # Marriage & family
+    "married": {"marriage", "marital", "family"},
+    "marriage": {"marital", "married"},
+    "family": {"household", "married"},
+    "families": {"household", "married", "family"},
+    # Insurance & health
+    "insurance": {"health", "coverage", "covered"},
+    "health": {"insurance"},
+    # Veterans
+    "veteran": {"military", "armed"},
+    "veterans": {"military", "armed"},
+    # Disability
+    "disabled": {"disability"},
+    "disability": {"disabled"},
+    # Immigration
+    "immigrant": {"foreign", "citizenship", "citizen", "born"},
+    "immigration": {"foreign", "citizenship", "citizen"},
+    "foreign": {"immigrant", "citizenship"},
+}
+
 
 class SchemaCache:
     """Schema cache for the SafeGraph US Open Census dataset.
@@ -193,12 +288,33 @@ class SchemaCache:
             '  "B01002e1" (in *_CBG_B01) = Median Age (total population; AVG across CBGs for approx state/county)',
             '  "B01002e2" (in *_CBG_B01) = Median Age — Male',
             '  "B01002e3" (in *_CBG_B01) = Median Age — Female',
+            '  Race/ethnicity (RACE table B02001, in *_CBG_B02) — SUM across CBGs:',
+            '    "B02001e1" = Total population counted for race',
+            '    "B02001e2" = White alone',
+            '    "B02001e3" = Black or African American alone',
+            '    "B02001e4" = American Indian or Alaska Native alone',
+            '    "B02001e5" = Asian alone',
+            '    "B02001e6" = Native Hawaiian or Other Pacific Islander alone',
+            '    "B02001e7" = Some other race alone',
+            '    "B02001e8" = Two or more races',
+            '    Use these for "racial breakdown", "racial diversity", "race composition" questions.',
+            '  Hispanic/Latino origin (B03002, in *_CBG_B03):',
+            '    "B03003e1" = Total; "B03003e2" = Not Hispanic or Latino; "B03003e3" = Hispanic or Latino',
             '  "B19013e1" (in *_CBG_B19) = Median Household Income (per CBG; AVG across CBGs for approx state/county)',
             '  "B19001e1" (in *_CBG_B19) = Total households',
-            '  "B02001e1" (in *_CBG_B02) = Total population counted for race',
             '  "B25001e1" (in *_CBG_B25) = Total housing units',
-            '  "B15003e1" (in *_CBG_B15) = Total population 25+ years (educational attainment universe)',
-            '  "B23025e1" (in *_CBG_B23) = Total population 16+ years (labor force universe)',
+            '  Educational attainment (B15003, in *_CBG_B15) — population 25+ years by highest degree:',
+            '    "B15003e1" = Total population 25+ (denominator for education percentages)',
+            '    "B15003e22" = Bachelor\'s degree',
+            '    "B15003e23" = Master\'s degree',
+            '    "B15003e24" = Professional school degree',
+            '    "B15003e25" = Doctorate degree',
+            '    "College graduates" = SUM of B15003e22 + B15003e23 + B15003e24 + B15003e25.',
+            '    "% college graduates" = (B15003e22+B15003e23+B15003e24+B15003e25) / B15003e1 * 100.',
+            '  Labor force (B23025, in *_CBG_B23):',
+            '    "B23025e1" = Total population 16+ (denominator)',
+            '    "B23025e2" = In labor force; "B23025e5" = Employed; "B23025e7" = Unemployed',
+            '    "Unemployment rate" = B23025e7 / B23025e2 * 100',
             "",
             "EXAMPLE — 'Top 10 most populated states':",
             "  SELECT f.STATE, SUM(b.\"B01003e1\") AS total_pop",
@@ -213,6 +329,16 @@ class SchemaCache:
             "  JOIN (SELECT DISTINCT STATE, STATE_FIPS FROM " + f'{settings.snowflake_database}.{settings.snowflake_schema}.\"2020_METADATA_CBG_FIPS_CODES\") f',
             "    ON SUBSTR(b.CENSUS_BLOCK_GROUP, 1, 2) = f.STATE_FIPS",
             "  GROUP BY f.STATE ORDER BY median_income DESC LIMIT 100",
+            "",
+            "EXAMPLE — 'Counties with highest % of college graduates':",
+            "  SELECT f.STATE, f.COUNTY,",
+            "         ROUND(100.0 * SUM(b.\"B15003e22\"+b.\"B15003e23\"+b.\"B15003e24\"+b.\"B15003e25\")::FLOAT",
+            "               / NULLIF(SUM(b.\"B15003e1\"), 0), 2) AS pct_college_grads",
+            "  FROM " + f'{settings.snowflake_database}.{settings.snowflake_schema}.\"2020_CBG_B15\" b',
+            "  JOIN " + f'{settings.snowflake_database}.{settings.snowflake_schema}.\"2020_METADATA_CBG_FIPS_CODES\" f',
+            "    ON SUBSTR(b.CENSUS_BLOCK_GROUP, 1, 2) = f.STATE_FIPS",
+            "    AND SUBSTR(b.CENSUS_BLOCK_GROUP, 3, 3) = f.COUNTY_FIPS",
+            "  GROUP BY f.STATE, f.COUNTY ORDER BY pct_college_grads DESC LIMIT 10",
             "",
         ]
 
@@ -271,6 +397,10 @@ class SchemaCache:
 
     @staticmethod
     def _extract_keywords(question: str) -> set[str]:
+        """Extract search keywords from the question, expanded via a
+        census-domain synonym map so e.g. "racial" also matches "race" in
+        field descriptions.
+        """
         # Stop words to exclude — generic question words + overly-common nouns
         # that don't help narrow the schema (FIPS/geographic tables get a +5
         # boost separately so we don't lose state/county tables).
@@ -281,14 +411,16 @@ class SchemaCache:
             "states", "county", "counties", "now", "break", "down", "those",
             "they", "them", "also", "another",
         }
-        # Min length 3 to keep short but meaningful terms like "age", "sex", "pop".
+        # Min length 3 keeps short but meaningful terms like "age", "sex", "pop".
         words = {
             w.lower() for w in re.findall(r"\w+", question)
             if len(w) >= 3 and w.lower() not in stop
         }
-        # For each word, also emit a 5-char prefix (handles populated/population, housing/house, etc.)
-        prefixes = {w[:5] for w in words if len(w) >= 6}
-        return words | prefixes
+        # Expand via the domain synonym map
+        expanded: set[str] = set(words)
+        for w in words:
+            expanded |= CENSUS_SYNONYMS.get(w, set())
+        return expanded
 
     @staticmethod
     def _text_matches_keyword(text: str, keyword: str) -> bool:

@@ -100,3 +100,50 @@ class TestSchemaCache:
         assert "that" not in keywords
         # But 'age' (3 chars) should be kept
         assert "age" in keywords
+
+    def test_synonym_expansion_racial(self):
+        """'racial' should expand to race-related terms."""
+        keywords = SchemaCache._extract_keywords("What is the racial diversity breakdown?")
+        assert "racial" in keywords
+        assert "race" in keywords
+        assert "ethnic" in keywords
+
+    def test_synonym_expansion_housing(self):
+        """'housing' should expand to house/household."""
+        keywords = SchemaCache._extract_keywords("Tell me about housing costs")
+        assert "housing" in keywords
+        assert "house" in keywords
+        assert "household" in keywords
+
+    def test_synonym_expansion_job(self):
+        """'jobs' should expand to employment terms."""
+        keywords = SchemaCache._extract_keywords("How many jobs are in California?")
+        assert "jobs" in keywords
+        assert "employ" in keywords
+        assert "labor" in keywords
+
+    def test_synonym_expansion_kids(self):
+        """'kids' should expand to child/children."""
+        keywords = SchemaCache._extract_keywords("Number of kids per household")
+        assert "kids" in keywords
+        assert "child" in keywords
+        assert "children" in keywords
+
+    def test_word_without_synonyms_passes_through(self):
+        """Words not in the synonym map should just appear as themselves."""
+        keywords = SchemaCache._extract_keywords("Medicare recipients nationwide")
+        assert "medicare" in keywords
+        # No synonyms for this; should be the only census-y term
+        assert "nationwide" in keywords
+
+    def test_plural_synonyms_work(self):
+        """Plural forms should also expand (graduates, kids, jobs, colleges)."""
+        keywords = SchemaCache._extract_keywords(
+            "Counties with the highest percentage of college graduates"
+        )
+        assert "graduates" in keywords
+        assert "college" in keywords
+        # Both should bring in education-related terms
+        assert "education" in keywords
+        assert "degree" in keywords
+        assert "bachelor" in keywords

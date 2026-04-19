@@ -22,7 +22,7 @@ Input → Topic Guardrail → Schema-Aware SQL Gen → Safety Validator
 
 ## What I'd Improve With More Time
 
-- **Vector-based schema retrieval** — current keyword-matching is fast but coarse. Embedding column descriptions + sample values would handle synonyms and related concepts (e.g., "commute" → columns about travel time to work).
+- **Vector-based schema retrieval** — the current pipeline is keyword-matching plus a small hand-maintained `CENSUS_SYNONYMS` dict (racial→race/ethnic, housing→house/household, kids→child/children, etc.) that covers the synonym gap between user phrasing and ACS field descriptions. It works, but it's a moving target: new user phrasings need new entries. Embedding column descriptions + sample values would remove the dict entirely and handle synonyms, related concepts (e.g., "commute" → travel-time-to-work columns), and phrasing we haven't anticipated — at the cost of an embedding-model dependency and per-startup cost to embed ~5000 field descriptions.
 - **Query caching** — cache (normalized question + schema hash) → SQL to eliminate LLM calls for repeated questions.
 - **Conversation summarization** — truncating history at N messages loses early context; a summarization step would preserve facts like "the user is interested in California demographics."
 - **Evaluation framework** — curated (question, expected-SQL-pattern) pairs with accuracy + latency + cost metrics. Essential for iterating on prompts without regressions.
